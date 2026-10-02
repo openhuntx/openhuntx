@@ -1223,34 +1223,40 @@ class ScanJobStore:
                 "Persisted job-store state is invalid.",
             )
 
-        return ScanScheduleRecord(
-            schedule_id=row["schedule_id"],
-            organization_id=row["organization_id"],
-            created_by=row["created_by"],
-            name=row["name"],
-            target=row["target"],
-            authorization_id=row["authorization_id"],
-            authorization_sha256=row["authorization_sha256"],
-            mode=mode,
-            interval_seconds=_persisted_integer(
-                row["interval_seconds"]
-            ),
-            state=state,
-            created_at=created_at,
-            updated_at=updated_at,
-            next_run_at=next_run_at,
-            revision=_persisted_integer(
-                row["revision"]
-            ),
-            last_enqueued_at=_parse_timestamp(
-                row["last_enqueued_at"]
-            ),
-            last_job_id=row["last_job_id"],
-            last_error_code=row["last_error_code"],
-            last_error_at=_parse_timestamp(
-                row["last_error_at"]
-            ),
-        )
+        try:
+            return ScanScheduleRecord(
+                schedule_id=row["schedule_id"],
+                organization_id=row["organization_id"],
+                created_by=row["created_by"],
+                name=row["name"],
+                target=row["target"],
+                authorization_id=row["authorization_id"],
+                authorization_sha256=row["authorization_sha256"],
+                mode=mode,
+                interval_seconds=_persisted_integer(
+                    row["interval_seconds"]
+                ),
+                state=state,
+                created_at=created_at,
+                updated_at=updated_at,
+                next_run_at=next_run_at,
+                revision=_persisted_integer(
+                    row["revision"]
+                ),
+                last_enqueued_at=_parse_timestamp(
+                    row["last_enqueued_at"]
+                ),
+                last_job_id=row["last_job_id"],
+                last_error_code=row["last_error_code"],
+                last_error_at=_parse_timestamp(
+                    row["last_error_at"]
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise JobStoreError(
+                "job_store_persisted_state_invalid",
+                "Persisted job-store state is invalid.",
+            ) from exc
 
     @staticmethod
     def _record_from_row(row: sqlite3.Row) -> ScanJobRecord:
@@ -1298,30 +1304,36 @@ class ScanJobStore:
                 "Persisted job-store state is invalid.",
             ) from exc
 
-        return ScanJobRecord(
-            job_id=row["job_id"],
-            request=request,
-            state=state,
-            updated_at=updated_at,
-            revision=_persisted_integer(
-                row["revision"]
-            ),
-            cancellation_requested=bool(
-                row["cancellation_requested"]
-            ),
-            started_at=_parse_timestamp(
-                row["started_at"]
-            ),
-            completed_at=_parse_timestamp(
-                row["completed_at"]
-            ),
-            scan_id=row["scan_id"],
-            result_status=result_status,
-            report_ref=row["report_ref"],
-            audit_ref=row["audit_ref"],
-            error_code=row["error_code"],
-            error_message=row["error_message"],
-        )
+        try:
+            return ScanJobRecord(
+                job_id=row["job_id"],
+                request=request,
+                state=state,
+                updated_at=updated_at,
+                revision=_persisted_integer(
+                    row["revision"]
+                ),
+                cancellation_requested=bool(
+                    row["cancellation_requested"]
+                ),
+                started_at=_parse_timestamp(
+                    row["started_at"]
+                ),
+                completed_at=_parse_timestamp(
+                    row["completed_at"]
+                ),
+                scan_id=row["scan_id"],
+                result_status=result_status,
+                report_ref=row["report_ref"],
+                audit_ref=row["audit_ref"],
+                error_code=row["error_code"],
+                error_message=row["error_message"],
+            )
+        except (TypeError, ValueError) as exc:
+            raise JobStoreError(
+                "job_store_persisted_state_invalid",
+                "Persisted job-store state is invalid.",
+            ) from exc
 
     @classmethod
     def _lease_from_row(cls, row: sqlite3.Row) -> LeasedScanJob:

@@ -78,6 +78,51 @@ jobs:
       - name: Run security gates
         run: ./scripts/run-security-gates.sh
 
+  cli-packaging:
+    name: CLI packaging (wheel build + clean install)
+    needs:
+      - unit-tests
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13.14"
+          pip-version: "26.2.1"
+
+      - name: Build the contracts and scanner wheels
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          mkdir -p dist
+          python -m pip wheel packages/contracts/python -w dist --no-deps
+          python -m pip wheel workers/scanner -w dist --no-deps
+
+      - name: Validate the wheels, install them into a clean environment, and smoke-test the CLI
+        run: python scripts/verify-release-artifacts.py --dist dist --checksums-out SHA256SUMS
+
+      - name: Run the publish jobs' staging checks against those same files
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          cp -R dist release/dist
+          cp SHA256SUMS release/SHA256SUMS
+          contracts_sha="$(grep '_contracts-' SHA256SUMS | cut -d' ' -f1)"
+          webguard_sha="$(grep -v '_contracts-' SHA256SUMS | cut -d' ' -f1)"
+          version="$(ls dist | sed -n 's/^openhuntx_webguard-\(.*\)-py3-none-any\.whl$/\1/p')"
+          for distribution in contracts webguard; do
+            python scripts/release-publish.py stage \
+              --release-dir release --distribution "$distribution" \
+              --stage-dir "stage-$distribution" \
+              --expect-version "$version" \
+              --expect-contracts-sha256 "$contracts_sha" \
+              --expect-webguard-sha256 "$webguard_sha"
+          done
+
   authorised-lab-integration:
     name: Authorised Juice Shop integration
     needs:

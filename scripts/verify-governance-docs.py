@@ -10,7 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_DOCUMENTS = {
-    "SECURITY.md": ("# OpenHuntX WebGuard Security Policy", "## Reporting a vulnerability"),
+    "SECURITY.md": ("# WebGuard Security Policy", "## Reporting a vulnerability"),
     "docs/ARCHITECTURE.md": ("# OpenHuntX WebGuard Architecture", "## 6. Trust boundaries"),
     "docs/AUTHORIZATION_MODEL.md": ("# OpenHuntX WebGuard Authorisation Model", "## 15. Request-boundary enforcement"),
     "docs/DATA_CLASSIFICATION.md": ("# OpenHuntX WebGuard Data Classification and Handling", "### Restricted"),
@@ -85,16 +85,62 @@ def verify_readme() -> None:
         if marker in text:
             fail(f"README contains stale marker: {marker!r}")
     required = (
-        "docs/PLATFORM_SCOPE.md",
-        "PostgreSQL-backed",
-        "Current test totals are emitted by `./scripts/verify.sh` and CI.",
+        # The CLI pivot's reviewed baseline: the README must keep pointing
+        # at the legacy-platform index and the CLI's own architecture doc
+        # (not silently drift back to describing the retired SaaS product
+        # as current), must keep the tested-platform claim in sync with
+        # the actual CI matrix. The license claim is checked separately, by
+        # verify_license_state, against whether a LICENSE file exists.
+        "docs/LEGACY_PLATFORM.md",
+        "docs/CLI_ARCHITECTURE.md",
+        "docs/CASE_STUDY.md",
         "Python 3.11.15, 3.12.13, 3.13.14, and 3.14.6",
-        "docs/ARCHITECTURE.md",
-        "docs/THREAT_MODEL.md",
+        "cli-packaging",
     )
     for marker in required:
         if marker not in text:
             fail(f"README is missing current marker: {marker!r}")
+    verify_license_state(text)
+
+
+PUBLISHED_PACKAGE_DIRECTORIES = ("packages/contracts/python", "workers/scanner")
+
+
+def verify_license_state(readme: str) -> None:
+    """The README, the LICENSE file, and the package metadata must agree.
+
+    No LICENSE file means no license: the README must say so and no
+    published package may claim one. Once a LICENSE exists (scripts/
+    apply-license.py writes it), the README must have a License section,
+    each published package must carry a byte-identical copy and declare a
+    license expression, and the README must stop saying none is chosen.
+    """
+
+    license_file = ROOT / "LICENSE"
+    packages = {
+        directory: (ROOT / directory / "pyproject.toml").read_text(encoding="utf-8")
+        for directory in PUBLISHED_PACKAGE_DIRECTORIES
+    }
+    if not license_file.is_file():
+        if "No license chosen yet." not in readme:
+            fail("README must say no license is chosen while there is no LICENSE file")
+        for directory, pyproject in packages.items():
+            if re.search(r"^license(-files)?\s*=", pyproject, re.MULTILINE):
+                fail(f"{directory}/pyproject.toml declares a license but no LICENSE file exists")
+        return
+
+    if "## License" not in readme:
+        fail("a LICENSE file exists but the README has no '## License' section")
+    if "No license chosen yet." in readme:
+        fail("README still says no license is chosen although a LICENSE file exists")
+    for directory, pyproject in packages.items():
+        copy = ROOT / directory / "LICENSE"
+        if not copy.is_file() or copy.read_bytes() != license_file.read_bytes():
+            fail(f"{directory}/LICENSE must be a byte-identical copy of the root LICENSE")
+        if not re.search(r'^license\s*=\s*"[^"]+"', pyproject, re.MULTILINE):
+            fail(f"{directory}/pyproject.toml has no license expression")
+        if 'license-files = ["LICENSE"]' not in pyproject:
+            fail(f"{directory}/pyproject.toml does not bundle the LICENSE file")
 
 
 def verify_repository_paths() -> None:

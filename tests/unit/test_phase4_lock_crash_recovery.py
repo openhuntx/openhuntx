@@ -756,6 +756,70 @@ class Phase4LockCrashRecoveryTests(unittest.TestCase):
             ),
         )
 
+    def lock_database_exclusive(self) -> sqlite3.Connection:
+        """BEGIN IMMEDIATE (used by lock_database above) only blocks other
+        writers: a plain SELECT from another connection still succeeds
+        while a RESERVED lock is held, which is why every test above this
+        point exercises a write path. Phase 6's C-6 finding is in three
+        read-only IdentityStore methods, which need an EXCLUSIVE lock to
+        reproduce a real blocked read."""
+
+        connection = sqlite3.connect(
+            self.path,
+            isolation_level=None,
+        )
+        connection.execute("PRAGMA busy_timeout = 25")
+        connection.execute("BEGIN EXCLUSIVE")
+        return connection
+
+    def test_locked_get_organization_is_controlled(self) -> None:
+        """Phase 6 C-6: get_organization had try/finally with no
+        except sqlite3.Error, unlike create_principal's write path two
+        methods above it in the same file. A locked database raised a
+        raw sqlite3.OperationalError instead of IdentityStoreError."""
+
+        self.identity.create_organization(
+            "Phase 6 Read Lock Tenant", now=NOW, organization_id=ORG_ID
+        )
+        identity = ShortBusyIdentityStore(self.path)
+        locked = self.lock_database_exclusive()
+        try:
+            with self.assertRaises(IdentityStoreError) as caught:
+                identity.get_organization(ORG_ID)
+        finally:
+            locked.rollback()
+            locked.close()
+        self.assertEqual(caught.exception.code, "organization_read_failed")
+
+    def test_locked_get_principal_is_controlled(self) -> None:
+        self.create_owner_identity(self.identity)
+        identity = ShortBusyIdentityStore(self.path)
+        locked = self.lock_database_exclusive()
+        try:
+            with self.assertRaises(IdentityStoreError) as caught:
+                identity.get_principal(OWNER_ID)
+        finally:
+            locked.rollback()
+            locked.close()
+        self.assertEqual(caught.exception.code, "principal_read_failed")
+
+    def test_locked_authorization_is_assigned_is_controlled(self) -> None:
+        self.create_owner_identity(self.identity)
+        self.identity.assign_authorization(
+            ORG_ID, AUTH_ID, assigned_by=OWNER_ID, now=NOW
+        )
+        identity = ShortBusyIdentityStore(self.path)
+        locked = self.lock_database_exclusive()
+        try:
+            with self.assertRaises(IdentityStoreError) as caught:
+                identity.authorization_is_assigned(ORG_ID, AUTH_ID)
+        finally:
+            locked.rollback()
+            locked.close()
+        self.assertEqual(
+            caught.exception.code, "authorization_assignment_read_failed"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

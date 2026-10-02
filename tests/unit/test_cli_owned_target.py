@@ -152,8 +152,8 @@ class OwnedTargetCliTests(unittest.TestCase):
             with patch.object(
                 cli, "_utc_now", return_value=NOW
             ), patch.object(
-                cli, "validate_target_url", return_value=TARGET
-            ), patch.object(cli, "run_passive_header_scan") as scan:
+                cli, "validate_target_url"
+            ) as validate, patch.object(cli, "run_passive_header_scan") as scan:
                 exit_code, _, stderr = self.run_cli(
                     [
                         "scan",
@@ -171,6 +171,100 @@ class OwnedTargetCliTests(unittest.TestCase):
         self.assertFalse(output.exists())
         self.assertFalse(audit.exists())
         scan.assert_not_called()
+        # The mismatch is detected from the authorization document and the
+        # raw target string alone, before validate_target_url's DNS
+        # resolution runs -- not just before the scan.
+        validate.assert_not_called()
+
+    def test_expired_authorization_is_rejected_before_dns_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "authorization.json"
+            write_owned_target_authorization_file(
+                OwnedTargetAuthorization(
+                    authorization_id=AUTHORIZATION_ID,
+                    organization="Example Ltd",
+                    authorized_by="Security Owner",
+                    target=TARGET.normalised_url,
+                    allowed_hosts=(TARGET.hostname,),
+                    issued_at=NOW - timedelta(days=60),
+                    expires_at=NOW - timedelta(days=30),
+                    purpose="Deliberately expired fixture for verification",
+                ),
+                path,
+            )
+            output = Path(directory) / "report.json"
+            audit = Path(str(output) + cli.DEFAULT_OWNED_AUDIT_SUFFIX)
+
+            with patch.object(
+                cli, "_utc_now", return_value=NOW
+            ), patch.object(
+                cli, "validate_target_url"
+            ) as validate, patch.object(cli, "run_passive_header_scan") as scan:
+                exit_code, _, stderr = self.run_cli(
+                    self.scan_arguments(path, "--output", str(output))
+                )
+
+        self.assertEqual(exit_code, cli.EXIT_PREFLIGHT_FAILED)
+        self.assertIn("owned_target_authorization_expired", stderr)
+        self.assertFalse(output.exists())
+        self.assertFalse(audit.exists())
+        scan.assert_not_called()
+        validate.assert_not_called()
+
+    def test_malformed_authorization_json_is_rejected_before_dns_resolution(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "authorization.json"
+            path.write_text("{not valid json", encoding="utf-8")
+            output = Path(directory) / "report.json"
+
+            with patch.object(
+                cli, "validate_target_url"
+            ) as validate, patch.object(cli, "run_passive_header_scan") as scan:
+                exit_code, _, stderr = self.run_cli(
+                    self.scan_arguments(path, "--output", str(output))
+                )
+
+        self.assertEqual(exit_code, cli.EXIT_PREFLIGHT_FAILED)
+        self.assertIn("owned_target_json_invalid", stderr)
+        self.assertFalse(output.exists())
+        scan.assert_not_called()
+        validate.assert_not_called()
+
+    def test_target_mismatch_is_rejected_before_dns_resolution(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            authorization = self.authorization_file(directory)
+            output = Path(directory) / "report.json"
+            audit = Path(str(output) + cli.DEFAULT_OWNED_AUDIT_SUFFIX)
+
+            with patch.object(
+                cli, "_utc_now", return_value=NOW
+            ), patch.object(
+                cli, "validate_target_url"
+            ) as validate, patch.object(cli, "run_passive_header_scan") as scan:
+                exit_code, _, stderr = self.run_cli(
+                    [
+                        "scan",
+                        "https://not-example.com/",
+                        "--authorization-file",
+                        str(authorization),
+                        "--confirm-authorization",
+                        AUTHORIZATION_ID,
+                        "--output",
+                        str(output),
+                    ]
+                )
+
+        self.assertEqual(exit_code, cli.EXIT_PREFLIGHT_FAILED)
+        self.assertIn("owned_target_canonical_target_mismatch", stderr)
+        self.assertFalse(output.exists())
+        self.assertFalse(audit.exists())
+        scan.assert_not_called()
+        # The authorization is scoped to a different host than the one
+        # being scanned, so this is rejected from the two raw URL strings
+        # alone -- the mismatched target's hostname is never looked up.
+        validate.assert_not_called()
 
     def test_preflight_only_sends_no_http_and_writes_no_files(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -72,6 +72,21 @@ class ApiTransportError(ValueError):
         self.status = status
 
 
+def _internal_server_error() -> ApiTransportError:
+    """A fixed, non-leaking error for an unexpected handler exception.
+
+    Deliberately discards the original exception's type and message, matching
+    worker.py's own ``worker_internal_error`` precedent: raw exception detail
+    must never reach a caller, only a stable code and a generic message.
+    """
+
+    return ApiTransportError(
+        "internal_server_error",
+        "An unexpected internal error occurred.",
+        status=500,
+    )
+
+
 def _json_bytes(value: object) -> bytes:
     return json.dumps(
         value,
@@ -991,6 +1006,8 @@ def build_handler(
                 RateLimitError,
             ) as exc:
                 self._error(exc, request_id=request_id)
+            except Exception:
+                self._error(_internal_server_error(), request_id=request_id)
 
         def _unauthenticated_json_body(self, error_code: str) -> dict:
             raw_body = self._read_json_body()
@@ -1493,6 +1510,8 @@ def build_handler(
                 raise ApiTransportError("route_not_found", "API route was not found.", status=404)
             except (ApiTransportError, ApiServiceError, AuthenticationError, RateLimitError) as exc:
                 self._error(exc, request_id=request_id)
+            except Exception:
+                self._error(_internal_server_error(), request_id=request_id)
 
         @_log_api_request
         def do_PUT(self) -> None:  # noqa: N802

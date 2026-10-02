@@ -37,6 +37,25 @@ class ValidationPolicy:
 
 
 @dataclass(frozen=True)
+class CanonicalTarget:
+    """A target URL parsed and normalised, before any DNS resolution.
+
+    Carries no information about whether the target is reachable or safe to
+    connect to -- only validate_target_url's full resolution and address
+    classification establishes that. Exists so that checks which only need
+    the canonical URL (does this match an authorization's recorded target?
+    is the scheme https?) can run before any network activity, without
+    duplicating validate_target_url's parsing logic.
+    """
+
+    original_url: str
+    normalised_url: str
+    scheme: str
+    hostname: str
+    port: int
+
+
+@dataclass(frozen=True)
 class ValidatedTarget:
     """Normalised target returned after successful validation."""
 
@@ -257,15 +276,20 @@ def _format_netloc(hostname: str, port: int, scheme: str) -> str:
     return f"{formatted_host}:{port}"
 
 
-def validate_target_url(
+def canonicalize_target_url(
     url: str,
     policy: ValidationPolicy,
-    resolver: Resolver = resolve_host,
-) -> ValidatedTarget:
-    """Validate, resolve and normalise a target URL.
+) -> CanonicalTarget:
+    """Parse and normalise a target URL without resolving or connecting to it.
 
-    The resolved addresses must still be enforced when the scanner opens the
-    connection. Redirect destinations must be independently revalidated.
+    This performs no DNS lookup and no network activity of any kind. It
+    exists so that authorization checks which only need the canonical URL
+    string (malformed input, scheme, an authorization's recorded target,
+    its host allowlist) can reject a scan before validate_target_url's own
+    resolver call ever runs. It does not establish that the target is safe
+    to connect to -- validate_target_url's resolution and address
+    classification is still the sole gate before any actual connection, and
+    still must run and still must pass before that connection is made.
     """
 
     if not isinstance(url, str):
@@ -353,6 +377,42 @@ def validate_target_url(
     if port is None:
         port = 443 if scheme == "https" else 80
 
+    path = parsed.path or "/"
+
+    normalised_url = urlunsplit(
+        (
+            scheme,
+            _format_netloc(hostname, port, scheme),
+            path,
+            "",
+            "",
+        )
+    )
+
+    return CanonicalTarget(
+        original_url=candidate,
+        normalised_url=normalised_url,
+        scheme=scheme,
+        hostname=hostname,
+        port=port,
+    )
+
+
+def validate_target_url(
+    url: str,
+    policy: ValidationPolicy,
+    resolver: Resolver = resolve_host,
+) -> ValidatedTarget:
+    """Validate, resolve and normalise a target URL.
+
+    The resolved addresses must still be enforced when the scanner opens the
+    connection. Redirect destinations must be independently revalidated.
+    """
+
+    canonical = canonicalize_target_url(url, policy)
+    hostname = canonical.hostname
+    port = canonical.port
+
     try:
         raw_addresses = tuple(resolver(hostname, port))
     except TargetValidationError:
@@ -412,23 +472,11 @@ def validate_target_url(
             "The selected validation mode is unsupported.",
         )
 
-    path = parsed.path or "/"
-
-    normalised_url = urlunsplit(
-        (
-            scheme,
-            _format_netloc(hostname, port, scheme),
-            path,
-            "",
-            "",
-        )
-    )
-
     return ValidatedTarget(
-        original_url=candidate,
-        normalised_url=normalised_url,
-        scheme=scheme,
-        hostname=hostname,
-        port=port,
+        original_url=canonical.original_url,
+        normalised_url=canonical.normalised_url,
+        scheme=canonical.scheme,
+        hostname=canonical.hostname,
+        port=canonical.port,
         resolved_addresses=validated_addresses,
     )

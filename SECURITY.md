@@ -1,116 +1,65 @@
-# OpenHuntX WebGuard Security Policy
+# WebGuard Security Policy
 
 ## Product status
 
-OpenHuntX WebGuard is a private commercial security product under active development. The repository currently represents a local, single-host engineering foundation rather than a publicly hosted production service.
+WebGuard is a local, terminal-only CLI tool under active pre-1.0 development. It is not a hosted service: there is no server, account, or network call besides the HTTP(S) request it sends to the target you name.
 
-The local WebGuard API is intentionally restricted to loopback IP addresses. It is not approved for direct exposure to untrusted networks or the public internet.
+An archived, no-longer-maintained multi-tenant SaaS layer exists in this repository's history (`apps/api`, `apps/web`). See [`docs/LEGACY_PLATFORM.md`](docs/LEGACY_PLATFORM.md). This policy describes the active CLI product, not that archived layer.
 
 ## Supported versions
 
 | Version or branch | Security support |
 | --- | --- |
 | Current `main` branch | Supported for active development and security fixes |
-| Historical milestone commits | Not independently supported |
-| Public hosted service | Not yet released |
+| Historical commits/tags | Not independently supported |
 
-Until a formal release policy exists, security fixes are made against the current development baseline rather than backported to historical milestones.
+There is no formal backport policy yet; fixes land against `main`.
 
 ## Reporting a vulnerability
 
-Do not open a public GitHub issue containing exploit details, credentials, private target information, scan artefacts, or other sensitive security information.
+Do not open a public GitHub issue containing exploit details, credentials, target information, or scan artifacts.
 
-Preferred reporting paths are:
+Report privately through GitHub: open <https://github.com/openhuntx/openhuntx/security/advisories/new>, or use the "Report a vulnerability" button on the repository's Security tab. Private vulnerability reporting is enabled for this repository, and the report is visible only to the maintainers until they choose to publish an advisory. There is no separate security email address.
 
-1. the repository's private GitHub security-reporting or security-advisory channel, when enabled; or
-2. the official private OpenHuntX security contact published through OpenHuntX-operated channels.
-
-A report should contain only the information needed to reproduce and assess the issue:
+Include, if known:
 
 - affected WebGuard version or commit;
-- affected component;
-- technical impact;
+- affected command or module;
+- technical impact (e.g. scope bypass, SSRF, path traversal in local file handling, authorization-check bypass);
 - reproducible steps or a minimal proof of concept;
-- whether authentication or a specific role is required;
-- whether tenant isolation, scan authorisation, TrustScan permits, runtime safety, signing keys, or artefacts are affected; and
-- suggested remediation, if known.
+- suggested remediation.
 
-Do not include live customer credentials, API tokens, private keys, or unrelated customer data. Redact them before submission.
+Do not include real target credentials, API keys, or any third party's data. Redact them first.
 
-## Security response principles
+## Scope of authorized testing
 
-OpenHuntX will triage reported issues according to technical impact and exploitability. Remediation and disclosure timing depend on severity, affected deployments, and the need to protect customers while a fix is prepared.
+WebGuard must only be used against targets the operator owns or is explicitly authorized to assess. A reachable hostname or working HTTP endpoint does not by itself establish permission to test it. The CLI's authorization document (`webguard authorization create`) is self-attested, fingerprinted, local record-keeping: it records what the operator asserted, not independently-verified legal permission.
 
-Security-sensitive fixes should include regression coverage whenever practical. Changes to trust boundaries, authorisation, cryptographic formats, tenancy, persistent schemas, runner isolation, or safety enforcement should be documented in an Architecture Decision Record (ADR).
-
-## Scope of authorised testing
-
-WebGuard must only be used against targets that the operator owns or is explicitly authorised to assess.
-
-A public hostname, reachable IP address, DNS record, or working HTTP endpoint does not by itself establish permission to test it. TrustScan permits are technical execution-authorisation records and do not independently prove legal ownership or legal permission.
-
-Testing WebGuard itself must not be used as a reason to send traffic to an unrelated third-party target. Use isolated laboratory targets or systems for which explicit permission exists.
+Do not use testing WebGuard itself as a reason to send traffic to an unrelated third-party target. Use an isolated lab target (`--lab`) or a system you have explicit permission to test.
 
 ## Current security boundaries
 
-The current implementation relies on several deliberate boundaries:
+- Fail-closed preflight: scope/authorization/policy checks run and can reject a scan before any request is sent.
+- Scope validation and SSRF-safe target resolution (`scope_validator.py`, `safe_http.py`): rejects private/reserved address ranges outside explicit `--lab --allow-host` mode, blocks redirects during a scan, enforces bounded request/body/header limits.
+- Locally stored authorization documents, scan results, and reports are written with `0600` file permissions inside `0700` directories, and refuse to follow a symlink at the destination path.
+- HMAC-signed crawl checkpoints, so a resumed crawl can't be tampered with or resumed against a different scan.
+- A fail-closed top-level exception boundary in `cli.py`'s `main()`: an unexpected error exits with a dedicated, documented code (`6`) and a visible message, rather than a silent partial result.
+- No telemetry, no phone-home, no update check.
 
-- loopback-only API binding;
-- Bearer-token authentication and organisation-scoped RBAC;
-- server-side owned-target authorisation assignments;
-- cryptographically signed TrustScan permits;
-- request-boundary permit and authorisation revalidation;
-- same-origin, method, request-budget, rate, and concurrency enforcement;
-- safe HTTP target validation and redirect blocking;
-- private SQLite and artefact permissions;
-- bounded worker leases and stale-worker fencing;
-- signed crawl checkpoints and signed TrustScan Safety Receipts; and
-- hash-locked external Python dependencies and pinned CI/lab inputs.
+These controls reduce risk but do not prove a target is secure, and do not prove the operator has legal authority to test it.
 
-These controls reduce risk but do not prove that a target cannot be affected by testing and do not prove that a target is secure.
+## Secrets and sensitive local data
 
-## Secrets and credentials
+The following should never be committed to version control and are already covered by `.gitignore`:
 
-The following must be treated as restricted secrets:
+- `authorizations/`, `scan-results/`, `reports/` (or any directory you pointed `webguard` at with `--output`/`--directory`);
+- crawl-checkpoint signing keys;
+- scan reports and findings, which may describe a real target's security posture.
 
-- raw `wgt_...` API tokens;
-- TrustScan Ed25519 private signing material;
-- cursor-signing HMAC material;
-- checkpoint signing keys;
-- any future customer credentials or authenticated-scan secrets; and
-- deployment or CI credentials.
-
-Raw API tokens are intended to be displayed once and stored outside the repository. If a token or private key is exposed, revoke or rotate it and treat the previous value as compromised.
-
-Never commit secrets, production databases, authorisation documents, customer scan results, private reports, or backups to Git.
-
-## Sensitive artefacts
-
-Treat the following as confidential unless an explicit release process states otherwise:
-
-- owned-target authorisation documents;
-- job and schedule metadata;
-- security audit events;
-- signed TrustScan permits;
-- scan reports and findings;
-- comparison and remediation-verification reports;
-- checkpoints;
-- TrustScan Safety Receipts; and
-- service databases and backups.
-
-See `docs/DATA_CLASSIFICATION.md` for the repository's detailed handling model.
+If you believe a secret or sensitive scan artifact was accidentally committed, treat it as compromised, rotate/regenerate it, and report it as described above rather than opening a public issue about it.
 
 ## Security design documentation
 
-The security model is documented in:
-
-- `docs/ARCHITECTURE.md`: current system architecture and trust boundaries;
-- `docs/AUTHORIZATION_MODEL.md`: authorisation layers and fail-closed execution flow;
-- `docs/DATA_CLASSIFICATION.md`: data sensitivity and handling rules;
-- `docs/THREAT_MODEL.md`: threat actors, attack paths, mitigations, and residual risks;
-- `docs/PRODUCT_CHARTER.md`: product principles and scope; and
-- `docs/adr/`: milestone and security architecture decisions.
-
-## Production-readiness limitation
-
-The current single-host implementation is not the final hosted architecture. In particular, the current SQLite database stores service cryptographic secret material protected by owner-only filesystem permissions. A production hosted control plane must move signing secrets to an appropriate managed key boundary such as KMS/HSM-backed storage and separate the control plane from scanner execution infrastructure.
+- [`docs/CLI_ARCHITECTURE.md`](docs/CLI_ARCHITECTURE.md): current CLI architecture and package boundaries.
+- [`README.md`](README.md): authorization model, security decisions and trade-offs, exit codes.
+- [`docs/LEGACY_PLATFORM.md`](docs/LEGACY_PLATFORM.md): pointers into the archived SaaS platform's own (no-longer-current) threat model and architecture docs, for historical reference only.

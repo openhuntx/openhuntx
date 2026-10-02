@@ -471,19 +471,28 @@ def _record_coverage_for_report(
 
 
 def _prepare_private_directory(path: Path) -> None:
+    # These messages are persisted as job.error_message, a tenant-visible
+    # field (service.py's /result and /jobs/{id} responses): the path
+    # interpolated below is the operator's own --artifacts directory,
+    # expanded from wherever they passed it (executor.py's own
+    # ScanJobExecutor.__init__ calls Path(artifact_directory).expanduser(),
+    # so a "~/..." value here becomes the literal OS username), never
+    # anything the requesting tenant supplied. Generic messages here keep
+    # that server-side detail out of a tenant-facing surface while
+    # keeping the same stable codes for every other caller to match on.
     try:
         path.mkdir(parents=True, exist_ok=True, mode=0o700)
     except OSError as exc:
         raise JobExecutionError(
             "artifact_directory_create_failed",
-            f"Unable to create private artifact directory {path}.",
+            "Unable to create the private artifact directory.",
         ) from exc
     try:
         metadata = path.lstat()
     except OSError as exc:
         raise JobExecutionError(
             "artifact_directory_inspection_failed",
-            f"Unable to inspect artifact directory {path}.",
+            "Unable to inspect the artifact directory.",
         ) from exc
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise JobExecutionError(
@@ -506,7 +515,7 @@ def _write_signed_safety_receipt(receipt, path: Path) -> str:
     except OSError as exc:
         raise JobExecutionError(
             "artifact_path_inspection_failed",
-            f"Unable to inspect safety receipt path {path}.",
+            "Unable to inspect the safety-receipt artifact path.",
         ) from exc
     if exists:
         raise JobExecutionError(
@@ -529,7 +538,7 @@ def _write_signed_safety_receipt(receipt, path: Path) -> str:
     except OSError as exc:
         raise JobExecutionError(
             "artifact_write_failed",
-            f"Unable to write TrustScan safety receipt {path}.",
+            "Unable to write the TrustScan safety receipt.",
         ) from exc
     finally:
         if descriptor is not None:
@@ -1213,9 +1222,20 @@ class ScanJobExecutor:
                 ValidationPolicy(mode=ValidationMode.COMMERCIAL),
             )
         except ValueError as exc:
+            # scope_validator.py's own TargetValidationError messages
+            # interpolate the specific address that failed classification
+            # (e.g. "Commercial scans cannot target '10.1.2.3'."), which
+            # is whatever the scanning host's own DNS resolver actually
+            # returned for the tenant's authorized hostname, not anything
+            # the tenant supplied directly. A tenant who controls that
+            # hostname's DNS could read this job.error_message (a
+            # tenant-visible field) as a one-address-per-job internal-
+            # network oracle. The stable code above is enough for a
+            # caller to act on; the resolved address itself is not
+            # persisted here.
             raise JobExecutionError(
                 getattr(exc, "code", "target_validation_failed"),
-                str(exc),
+                "The target could not be validated for this scan.",
             ) from exc
 
         fetch_policy, retry_policy, crawl_policy = self._policies(
@@ -1271,10 +1291,19 @@ class ScanJobExecutor:
                 requested_checks=tuple(permit.permit.claims.active_checks),
                 scan_id=scan_id,
             )
+        # scan_id (above) is freshly generated on every call to execute(),
+        # including a retry after lease recovery, unlike record.job_id,
+        # which is fixed for the job's whole lifetime. Nesting under it
+        # gives each execution attempt its own artifact directory: without
+        # it, a job requeued after a crash, a restart, or lost lease
+        # always failed on retry, because write_owned_target_audit_file
+        # below runs with overwrite=False (deliberately, to never silently
+        # replace an existing audit record) against the same fixed path
+        # the first, interrupted attempt had already written.
         relative_directory = (
-            Path("jobs") / record.job_id
+            Path("jobs") / record.job_id / scan_id
             if organization_id is None
-            else Path("organizations") / organization_id / "jobs" / record.job_id
+            else Path("organizations") / organization_id / "jobs" / record.job_id / scan_id
         )
         report_ref = (relative_directory / "report.json").as_posix()
         audit_ref = (relative_directory / "authorization-audit.json").as_posix()
@@ -1449,6 +1478,22 @@ class ScanJobExecutor:
             raise JobExecutionError(
                 exc.code,
                 exc.message,
+                safety_receipt_ref=safety_receipt_ref,
+                safety_receipt_sha256=digest,
+            ) from exc
+        except Exception as exc:
+            # An unexpected scanner bug can happen after before_request
+            # already permitted real network traffic against the
+            # authorised target. Without this, that traffic would leave
+            # no signed safety receipt at all -- discards the original
+            # exception's type and message, matching every other
+            # controlled boundary in this module: only a stable code and
+            # a generic message ever reach the job record.
+            receipt = safety.signed_receipt(termination_reason="scanner_error")
+            digest = _write_signed_safety_receipt(receipt, safety_receipt_path)
+            raise JobExecutionError(
+                "scan_execution_failed",
+                "The scan could not be completed due to an unexpected error.",
                 safety_receipt_ref=safety_receipt_ref,
                 safety_receipt_sha256=digest,
             ) from exc

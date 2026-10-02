@@ -41,8 +41,8 @@ The exact reviewed commit SHAs are defined in `.github/workflows/ci.yml` and ver
 These packages are first-party WebGuard components and are not third-party notices:
 
 - `openhuntx-webguard-contracts`;
-- `openhuntx-webguard-scanner`; and
-- `openhuntx-webguard-api`.
+- `openhuntx-webguard` (the CLI, the `workers/scanner` package; distributed under this name as of the CLI release, formerly `openhuntx-webguard-scanner`); and
+- `openhuntx-webguard-api` (archived, see `docs/LEGACY_PLATFORM.md`).
 
 Their distribution licence must be defined by OpenHuntX before an external source/binary distribution that requires such a licence declaration.
 

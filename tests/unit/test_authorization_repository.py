@@ -74,6 +74,33 @@ class AuthorizationRepositoryTests(unittest.TestCase):
         (self.directory / "README.txt").write_text("not an authorization", encoding="utf-8")
         self.assertEqual(self.repository.get(AUTH_ID).authorization_id, AUTH_ID)
 
+    def test_another_tenants_bad_document_does_not_leak_its_name_or_content(
+        self,
+    ) -> None:
+        """Phase 6 C-2: every tenant's authorization document lives in
+        this one shared directory, and get() always scans all of them
+        (it must, to detect a duplicate authorization_id), regardless of
+        which tenant's ID a caller is looking for. A caller looking up
+        their own, perfectly valid authorization must not learn another
+        tenant's filename or the reason that tenant's own document is
+        invalid, purely because that other file happens to sort into the
+        same scan and fail first."""
+
+        secret_marker = "confidential-tenant-b-secret-detail"
+        other_tenant_path = self.directory / "zz-other-tenant-name.json"
+        other_tenant_path.write_text(
+            f'{{"organization": "{secret_marker}"}}', encoding="utf-8"
+        )
+        os.chmod(other_tenant_path, 0o600)
+
+        with self.assertRaises(AuthorizationRepositoryError) as caught:
+            self.repository.get(AUTH_ID)
+
+        message = caught.exception.message
+        self.assertNotIn("zz-other-tenant-name", message)
+        self.assertNotIn(secret_marker, message)
+        self.assertNotIn(str(self.directory), message)
+
 
 if __name__ == "__main__":
     unittest.main()

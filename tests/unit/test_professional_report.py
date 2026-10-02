@@ -262,6 +262,27 @@ class ReportComparisonBuilderTests(unittest.TestCase):
                 ),
             )
 
+    def test_rejects_comparing_a_scan_against_itself(self) -> None:
+        """C-9: a crawl resumed from a checkpoint reuses its original
+        scan_id, so a report ends up compared against itself with a
+        real, reachable frequency -- previously this reached the
+        ReportComparison contract directly, which raises
+        ReportComparisonError, a type the CLI's own except clause for
+        this command does not catch."""
+        with self.assertRaisesRegex(
+            ProfessionalReportError, "must not be the same scan"
+        ):
+            build_report_comparison(
+                report(
+                    "11111111-1111-4111-8111-111111111111",
+                    completed_offset=1,
+                ),
+                report(
+                    "11111111-1111-4111-8111-111111111111",
+                    completed_offset=2,
+                ),
+            )
+
     def test_rejects_generated_before_current(self) -> None:
         with self.assertRaisesRegex(ProfessionalReportError, "generated_at"):
             build_report_comparison(

@@ -8,6 +8,7 @@ from pathlib import Path
 from webguard_api import (
     AuthorizationRepository,
     IdentityStore,
+    JobStoreError,
     ScanJobStore,
     ScanScheduleCoordinator,
 )
@@ -203,6 +204,87 @@ class SchedulerTests(unittest.TestCase):
         summary = self.coordinator(batch_size=1).run_once()
         self.assertEqual(summary.inspected, 1)
         self.assertEqual(summary.enqueued, 1)
+
+    def test_identity_failure_blocks_only_the_affected_schedule(self) -> None:
+        """Phase 6 C-7: authorization_is_assigned's own call in run_once
+        was unwrapped, unlike every other lookup in this same loop, so
+        an IdentityStoreError there (after the Phase 6 C-6 fix, this is
+        now what a real database lock raises here, instead of an
+        uncontrolled sqlite3 error) aborted the whole batch rather than
+        blocking just the one affected schedule, exactly like a bad
+        authorization file or a bad permit binding already do below it
+        in this same function."""
+        from unittest.mock import patch
+
+        from webguard_api.identity import IdentityStoreError
+
+        self.create_schedule()
+        self.create_schedule(
+            schedule_id="88888888-8888-4888-8888-888888888888"
+        )
+        coordinator = self.coordinator()
+        with patch.object(
+            self.identity,
+            "authorization_is_assigned",
+            side_effect=IdentityStoreError(
+                "authorization_assignment_read_failed", "simulated lock"
+            ),
+        ):
+            summary = coordinator.run_once()
+        self.assertEqual(summary.inspected, 2)
+        self.assertEqual(summary.blocked, 2)
+        self.assertEqual(summary.enqueued, 0)
+        schedule = self.store.get_schedule_scoped(SCHEDULE_ID, ORG_ID)
+        self.assertEqual(
+            schedule.last_error_code, "authorization_assignment_read_failed"
+        )
+
+    def test_run_forever_survives_an_exception_run_once_does_not_catch(self) -> None:
+        """Companion to worker.py's identical test: run_forever had no
+        exception boundary of its own at all, so any exception from
+        run_once() (e.g. list_due_schedules, unwrapped, or the deliberate
+        except JobStoreError: raise around enqueue_due_schedule) ended
+        this thread permanently and silently in serve mode. _run_forever
+        now catches JobStoreError specifically (alongside the unrelated,
+        Postgres-specific DatabaseError a separate track's P1-11 fix
+        already covers), not a blanket Exception."""
+        import threading
+        from unittest.mock import patch
+
+        self.create_schedule()
+        coordinator = self.coordinator(poll_seconds=0.1)
+
+        call_count = {"n": 0}
+        real_list_due = self.store.list_due_schedules
+
+        def flaky_list_due(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise JobStoreError(
+                    "job_store_lock_contended",
+                    "Simulated transient database lock contention.",
+                )
+            return real_list_due(*args, **kwargs)
+
+        stop_event = threading.Event()
+        with patch.object(self.store, "list_due_schedules", side_effect=flaky_list_due):
+            thread = threading.Thread(
+                target=coordinator.run_forever, args=(stop_event,), daemon=True
+            )
+            thread.start()
+            try:
+                for _ in range(200):
+                    if call_count["n"] >= 2:
+                        break
+                    stop_event.wait(0.01)
+            finally:
+                stop_event.set()
+                thread.join(timeout=2)
+
+        self.assertFalse(thread.is_alive())
+        self.assertGreaterEqual(call_count["n"], 2)
+        self.assertEqual(coordinator.last_loop_error_type, "JobStoreError")
+        self.assertIsNotNone(coordinator.last_loop_error_at)
 
 
 if __name__ == "__main__":

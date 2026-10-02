@@ -8,6 +8,7 @@ from pathlib import Path
 from webguard_api import (
     JobExecutionError,
     JobExecutionOutcome,
+    JobStoreError,
     ScanJobStore,
     ScanJobWorker,
 )
@@ -116,6 +117,76 @@ class ScanJobWorkerTests(unittest.TestCase):
         )
         self.assertFalse(worker.run_once())
         self.assertEqual(executor.calls, [])
+
+    def test_run_forever_survives_an_exception_run_once_does_not_catch(self) -> None:
+        """Phase 6 C-7: run_once()'s own except Exception only wraps the
+        scanner-execution section; recover_expired_leases and
+        claim_next_leased, called before it on every pass, are not
+        wrapped at all. A real database lock (Phase 6 C-6 hardened this
+        to raise a controlled JobStoreError rather than a raw sqlite3
+        error) propagated out of run_forever and ended the worker thread
+        permanently and silently: serve mode has no supervisor to
+        restart it, and /healthz never checks whether it is still
+        running. run_forever()'s own boundary now catches JobStoreError
+        specifically (alongside the unrelated, Postgres-specific
+        DatabaseError a separate track's P1-10 fix already covers) --
+        not a blanket Exception, matching that same track's own
+        reasoning that a genuinely unexpected bug should stay visible.
+        This proves the thread survives and keeps polling on exactly
+        the exception type it is now supposed to."""
+        import threading
+        from unittest.mock import patch
+
+        record, _ = self.store.submit(self.request)
+        report = completed_report("b6a39765-16c6-42b4-91f0-998bf07f1912")
+        executor = FakeExecutor(
+            JobExecutionOutcome(
+                report=report,
+                report_ref=f"jobs/{record.job_id}/report.json",
+                audit_ref=f"jobs/{record.job_id}/authorization-audit.json",
+            )
+        )
+        worker = ScanJobWorker(
+            store=self.store,
+            executor=executor,
+            clock=lambda: NOW,
+            poll_seconds=0.01,
+        )
+
+        call_count = {"n": 0}
+        real_recover = self.store.recover_expired_leases
+
+        def flaky_recover(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise JobStoreError(
+                    "job_store_lock_contended",
+                    "Simulated transient database lock contention.",
+                )
+            return real_recover(*args, **kwargs)
+
+        stop_event = threading.Event()
+        with patch.object(self.store, "recover_expired_leases", side_effect=flaky_recover):
+            thread = threading.Thread(target=worker.run_forever, args=(stop_event,), daemon=True)
+            thread.start()
+            try:
+                for _ in range(200):
+                    if call_count["n"] >= 3:
+                        break
+                    stop_event.wait(0.01)
+            finally:
+                stop_event.set()
+                thread.join(timeout=2)
+
+        self.assertFalse(thread.is_alive(), "run_forever must exit once stop_event is set")
+        self.assertGreaterEqual(
+            call_count["n"], 3,
+            "the loop must keep polling on later iterations, not die after the first failure",
+        )
+        self.assertEqual(worker.last_loop_error_type, "JobStoreError")
+        self.assertIsNotNone(worker.last_loop_error_at)
+        stored = self.store.get(record.job_id)
+        self.assertIs(stored.state, ScanJobState.COMPLETED)
 
 
 if __name__ == "__main__":

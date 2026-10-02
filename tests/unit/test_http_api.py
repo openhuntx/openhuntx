@@ -7,6 +7,7 @@ from datetime import timedelta
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from webguard_api import (
     ApiTokenAuthenticator,
@@ -862,6 +863,58 @@ class HttpApiTests(unittest.TestCase):
         status, _, payload = self.request("GET", "/v1/audit-events", token="viewer")
         self.assertEqual(status, 403)
         self.assertEqual(payload["error"]["code"], "permission_denied")
+
+    def test_unexpected_exception_in_get_handler_returns_controlled_500(self) -> None:
+        """An exception type the handler never anticipated (not one of
+        ApiTransportError/ApiServiceError/AuthenticationError/RateLimitError)
+        must still resolve to a stable, non-leaking error response rather
+        than an unhandled exception that resets the client connection."""
+
+        with patch.object(
+            WebGuardJobService,
+            "me",
+            side_effect=RuntimeError("contains-canary-detail-should-not-leak"),
+        ):
+            status, _, payload = self.request("GET", "/v1/me")
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"]["code"], "internal_server_error")
+        self.assertNotIn("canary-detail", json.dumps(payload))
+        self.assertNotIn("RuntimeError", json.dumps(payload))
+        self.assertIn("request_id", payload["error"])
+
+    def test_unexpected_exception_in_post_handler_returns_controlled_500(self) -> None:
+        body = permit_submission()
+        with patch.object(
+            WebGuardJobService,
+            "issue_permit",
+            side_effect=KeyError("contains-canary-detail-should-not-leak"),
+        ):
+            status, _, payload = self.request(
+                "POST",
+                "/v1/permits",
+                body=body,
+                headers={
+                    "Content-Type": "application/json",
+                    "Content-Length": str(len(body)),
+                },
+            )
+        self.assertEqual(status, 500)
+        self.assertEqual(payload["error"]["code"], "internal_server_error")
+        self.assertNotIn("canary-detail", json.dumps(payload))
+
+    def test_server_remains_available_after_an_unexpected_exception(self) -> None:
+        """One handler crashing must not take down the shared server: a
+        normal request immediately afterward must still succeed."""
+
+        with patch.object(
+            WebGuardJobService, "me", side_effect=RuntimeError("boom")
+        ):
+            status, _, _ = self.request("GET", "/v1/me")
+        self.assertEqual(status, 500)
+
+        status, _, payload = self.request("GET", "/v1/me")
+        self.assertEqual(status, 200)
+        self.assertIn("principal_id", payload)
 
 
 if __name__ == "__main__":

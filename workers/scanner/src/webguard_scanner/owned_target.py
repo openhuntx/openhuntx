@@ -17,7 +17,7 @@ from webguard_contracts import (
 from .crawler import CrawlPolicy
 from .retry_policy import RetryPolicy
 from .safe_http import FetchPolicy
-from .scope_validator import ValidatedTarget
+from .scope_validator import CanonicalTarget, ValidatedTarget
 
 
 OWNED_DEFAULT_CRAWL_PAGES = 10
@@ -124,28 +124,35 @@ def _execution_policy(
     )
 
 
-def validate_owned_target_preflight(
+def validate_owned_target_authorization_static(
     authorization: OwnedTargetAuthorization,
-    target: ValidatedTarget,
+    canonical_target: CanonicalTarget,
     *,
     confirmation: str,
-    scan_id: str,
-    fetch_policy: FetchPolicy,
-    retry_policy: RetryPolicy,
-    crawl_policy: CrawlPolicy | None,
     now: datetime | None = None,
-) -> OwnedTargetPreflight:
-    """Validate authorization, scope, budgets, and operator confirmation."""
+) -> datetime:
+    """Validate authorization identity, validity window, and target match.
+
+    Covers every owned-target authorization check that needs only the
+    authorization document and a canonicalised (not yet DNS-resolved) target
+    URL: confirmation-ID match, the authorization's validity window, scheme,
+    and whether the canonical target and host match what the authorization
+    actually authorizes. Deliberately excludes the resolved-address and
+    per-request/crawl-limit checks, which need a fully resolved
+    ValidatedTarget and live in validate_owned_target_preflight below.
+
+    Callable before any DNS resolution, so a malformed, expired, or
+    out-of-scope authorization is rejected without the scan ever touching
+    the network. Raises OwnedTargetPreflightError on failure. Returns the
+    UTC clock value used for the validity check, so a caller that goes on
+    to build an audit record uses the exact same timestamp rather than
+    reading the clock a second time.
+    """
 
     if not isinstance(authorization, OwnedTargetAuthorization):
         raise OwnedTargetPreflightError(
             "owned_target_authorization_invalid",
             "A validated owned-target authorization is required.",
-        )
-    if not isinstance(target, ValidatedTarget):
-        raise OwnedTargetPreflightError(
-            "owned_target_validated_target_invalid",
-            "A validated target is required.",
         )
     if confirmation != authorization.authorization_id:
         raise OwnedTargetPreflightError(
@@ -169,22 +176,64 @@ def validate_owned_target_preflight(
             "owned_target_authorization_expired",
             "Owned-target authorization has expired.",
         )
-    if target.scheme != "https":
+    if canonical_target.scheme != "https":
         raise OwnedTargetPreflightError(
             "owned_target_https_required",
             "Owned production scans require HTTPS.",
         )
-    if target.normalised_url != authorization.target:
+    if canonical_target.normalised_url != authorization.target:
         raise OwnedTargetPreflightError(
             "owned_target_canonical_target_mismatch",
             "The validated target must exactly match the authorization's canonical target.",
         )
-    target_hostname = urlsplit(target.normalised_url).hostname
+    target_hostname = urlsplit(canonical_target.normalised_url).hostname
     if target_hostname not in authorization.allowed_hosts:
         raise OwnedTargetPreflightError(
             "owned_target_host_not_authorized",
             "The target hostname is not present in the authorization allowlist.",
         )
+    return effective_now
+
+
+def _as_canonical_target(target: ValidatedTarget) -> CanonicalTarget:
+    return CanonicalTarget(
+        original_url=target.original_url,
+        normalised_url=target.normalised_url,
+        scheme=target.scheme,
+        hostname=target.hostname,
+        port=target.port,
+    )
+
+
+def validate_owned_target_preflight(
+    authorization: OwnedTargetAuthorization,
+    target: ValidatedTarget,
+    *,
+    confirmation: str,
+    scan_id: str,
+    fetch_policy: FetchPolicy,
+    retry_policy: RetryPolicy,
+    crawl_policy: CrawlPolicy | None,
+    now: datetime | None = None,
+) -> OwnedTargetPreflight:
+    """Validate authorization, scope, budgets, and operator confirmation."""
+
+    if not isinstance(authorization, OwnedTargetAuthorization):
+        raise OwnedTargetPreflightError(
+            "owned_target_authorization_invalid",
+            "A validated owned-target authorization is required.",
+        )
+    if not isinstance(target, ValidatedTarget):
+        raise OwnedTargetPreflightError(
+            "owned_target_validated_target_invalid",
+            "A validated target is required.",
+        )
+    effective_now = validate_owned_target_authorization_static(
+        authorization,
+        _as_canonical_target(target),
+        confirmation=confirmation,
+        now=now,
+    )
     addresses = _public_addresses(target)
     limits = authorization.limits
     if fetch_policy.timeout_seconds > limits.timeout_seconds:
@@ -287,5 +336,6 @@ __all__ = [
     "OWNED_DEFAULT_CRAWL_REQUEST_ATTEMPTS",
     "OwnedTargetPreflight",
     "OwnedTargetPreflightError",
+    "validate_owned_target_authorization_static",
     "validate_owned_target_preflight",
 ]

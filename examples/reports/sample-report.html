@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
+<title>WebGuard Demo Assessment - Example, Inc.</title>
+<style>
+:root{--ink:#111827;--muted:#5f6b7a;--line:#d7dce2;--paper:#ffffff;--soft:#f5f7f9;--red:#b42318;--amber:#b54708;--blue:#175cd3;}
+*{box-sizing:border-box}body{margin:0;background:#eef1f4;color:var(--ink);font-family:Inter,Arial,sans-serif;line-height:1.55}main{max-width:1080px;margin:32px auto;background:var(--paper);box-shadow:0 12px 40px #0f172a18}header{padding:56px 64px;background:#101828;color:white;border-bottom:6px solid #e31b23}header .brand{letter-spacing:.12em;text-transform:uppercase;font-weight:700;color:#fda29b}h1{font-size:38px;line-height:1.15;margin:18px 0 8px}header p{margin:4px 0;color:#d0d5dd}section{padding:34px 64px;border-bottom:1px solid var(--line)}h2{font-size:25px;margin:0 0 20px}h3{display:inline;font-size:19px}h4{margin:22px 0 7px}p{white-space:normal}code{overflow-wrap:anywhere}table{border-collapse:collapse;width:100%}th,td{text-align:left;vertical-align:top;padding:10px 12px;border-bottom:1px solid var(--line)}th{width:220px;color:var(--muted);font-size:13px;text-transform:uppercase;letter-spacing:.04em}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin:18px 0}.metrics div{background:var(--soft);padding:18px;border-top:4px solid #667085}.metrics span{display:block;font-size:30px;font-weight:700}.metrics small{text-transform:uppercase;color:var(--muted)}.comparison{grid-template-columns:repeat(4,1fr)}.finding{border:1px solid var(--line);border-radius:8px;padding:24px;margin:18px 0;break-inside:avoid}.finding-head{display:flex;justify-content:space-between;gap:20px;align-items:center}.index{display:inline-block;margin-right:12px;color:var(--muted);font-weight:700}.severity{padding:5px 10px;border-radius:999px;font-size:12px;font-weight:800}.severity-critical,.severity-high{background:#fee4e2;color:#b42318}.severity-medium{background:#fef0c7;color:#b54708}.severity-low{background:#dbeafe;color:#175cd3}.severity-informational{background:#e4e7ec;color:#344054}.compare-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}.compare-grid>div{background:var(--soft);padding:18px}.empty{padding:24px;background:var(--soft);border-left:5px solid #667085}footer{padding:24px 64px;color:var(--muted);font-size:12px}@media(max-width:760px){main{margin:0}header,section,footer{padding:28px 22px}.metrics,.comparison,.compare-grid{grid-template-columns:1fr 1fr}th{width:130px}}@media print{body{background:white}main{margin:0;max-width:none;box-shadow:none}a{color:inherit}}
+</style>
+</head>
+<body>
+<main>
+<header>
+  <div class="brand">OpenHuntX WebGuard</div>
+  <h1>WebGuard Demo Assessment</h1>
+  <p>Example, Inc.</p>
+  <p>Prepared by WebGuard CLI (synthetic demo) · Confidential</p>
+  <p>Generated 2026-10-01 04:44:39 UTC</p>
+</header>
+<section>
+  <h2>Executive summary</h2>
+  <p>No critical or high-severity findings were recorded. Medium-severity security-hardening work should be scheduled and verified.</p>
+  <p><strong>Highest recorded severity:</strong> Medium</p>
+  <div class="metrics">
+    <div><span>0</span><small>Critical</small></div>
+    <div><span>0</span><small>High</small></div>
+    <div><span>2</span><small>Medium</small></div>
+    <div><span>3</span><small>Low</small></div>
+    <div><span>0</span><small>Informational</small></div>
+  </div>
+</section>
+
+<section><h2>Assessment scope</h2><table><tr><th>Canonical target</th><td>http://127.0.0.1:8931/</td></tr><tr><th>Scan ID</th><td>4ed1796a-386d-4ca5-9549-8b6c4c093893</td></tr><tr><th>Engine</th><td>webguard-native 0.1.0</td></tr><tr><th>Status</th><td>completed</td></tr><tr><th>Started</th><td>2026-10-01 04:44:39 UTC</td></tr><tr><th>Completed</th><td>2026-10-01 04:44:39 UTC</td></tr><tr><th>Coverage</th><td>80.0%</td></tr><tr><th>Requests</th><td>1 attempted / 1 succeeded</td></tr><tr><th>Assessment mode</th><td>Passive single-page response analysis</td></tr></table></section>
+<section><h2>Technical findings</h2>
+<article class="finding" id="finding-3591241b22ab868c97ce808685cd7ce8e1d169b192647436c2239d990f55b054">
+  <div class="finding-head">
+    <div><span class="index">01</span><h3>Content-Security-Policy header missing</h3></div>
+    <span class="severity severity-medium">MEDIUM</span>
+  </div>
+  <table class="details">
+    <tr><th>Rule</th><td><code>web.headers.csp.missing</code></td></tr>
+    <tr><th>Affected location</th><td><code>http://127.0.0.1:8931/</code></td></tr>
+    <tr><th>Method</th><td>GET</td></tr>
+    <tr><th>Confidence</th><td>Confirmed</td></tr>
+    <tr><th>Fingerprint</th><td><code>3591241b22ab868c97ce808685cd7ce8e1d169b192647436c2239d990f55b054</code></td></tr>
+    <tr><th>Tags</th><td>content-security-policy, http-headers, passive</td></tr>
+  </table>
+  <h4>Description</h4><p>The response does not define a Content Security Policy to restrict which resources the browser may load or execute.</p>
+  <h4>Evidence</h4><ul><li>No Content-Security-Policy response header was observed.</li></ul>
+  <h4>Recommended remediation</h4><p>Deploy a tested Content-Security-Policy. Begin in report-only mode where appropriate, review violations, and then enforce the policy.</p>
+  <h4>Identifiers</h4><ul><li>CWE: CWE-693</li></ul>
+  <h4>References</h4><ul><li><a href="https://owasp.org/www-project-secure-headers/" rel="noreferrer">https://owasp.org/www-project-secure-headers/</a></li></ul>
+</article>
+<article class="finding" id="finding-9b7b56b8ef98e122d2e32dc2d806444d6dd7fbc72de8924a9b8bf5a644ea7996">
+  <div class="finding-head">
+    <div><span class="index">02</span><h3>Clickjacking frame protection missing</h3></div>
+    <span class="severity severity-medium">MEDIUM</span>
+  </div>
+  <table class="details">
+    <tr><th>Rule</th><td><code>web.headers.frame_protection.missing</code></td></tr>
+    <tr><th>Affected location</th><td><code>http://127.0.0.1:8931/</code></td></tr>
+    <tr><th>Method</th><td>GET</td></tr>
+    <tr><th>Confidence</th><td>Confirmed</td></tr>
+    <tr><th>Fingerprint</th><td><code>9b7b56b8ef98e122d2e32dc2d806444d6dd7fbc72de8924a9b8bf5a644ea7996</code></td></tr>
+    <tr><th>Tags</th><td>clickjacking, http-headers, passive</td></tr>
+  </table>
+  <h4>Description</h4><p>The response does not contain a CSP frame-ancestors directive or a valid X-Frame-Options fallback.</p>
+  <h4>Evidence</h4><ul><li>No CSP frame-ancestors directive or valid X-Frame-Options value was observed.</li></ul>
+  <h4>Recommended remediation</h4><p>Define an appropriate Content-Security-Policy frame-ancestors directive. Add X-Frame-Options as a legacy-browser fallback when required.</p>
+  <h4>Identifiers</h4><ul><li>CWE: CWE-1021</li></ul>
+  <h4>References</h4><ul><li><a href="https://owasp.org/www-community/attacks/Clickjacking" rel="noreferrer">https://owasp.org/www-community/attacks/Clickjacking</a></li></ul>
+</article>
+<article class="finding" id="finding-38faf6629293bc22ac2288b5bfc3e5852a2eedef560a44ed242bcbd4b5927d88">
+  <div class="finding-head">
+    <div><span class="index">03</span><h3>Server header exposes software version information</h3></div>
+    <span class="severity severity-low">LOW</span>
+  </div>
+  <table class="details">
+    <tr><th>Rule</th><td><code>web.disclosure.server.version</code></td></tr>
+    <tr><th>Affected location</th><td><code>http://127.0.0.1:8931/</code></td></tr>
+    <tr><th>Method</th><td>GET</td></tr>
+    <tr><th>Confidence</th><td>Confirmed</td></tr>
+    <tr><th>Fingerprint</th><td><code>38faf6629293bc22ac2288b5bfc3e5852a2eedef560a44ed242bcbd4b5927d88</code></td></tr>
+    <tr><th>Tags</th><td>http-headers, information-disclosure, passive, server, version</td></tr>
+  </table>
+  <h4>Description</h4><p>The Server response header identifies origin-server or edge technology. Version details make product-specific fingerprinting easier.</p>
+  <h4>Evidence</h4><ul><li>A Server header with a version-like token was observed; the value was not retained.</li></ul>
+  <h4>Recommended remediation</h4><p>Remove the Server header where practical, or configure a non-informative generic value without product or version details.</p>
+  <h4>Identifiers</h4><ul><li>CWE: CWE-200</li></ul>
+  <h4>References</h4><ul><li><a href="https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html#server" rel="noreferrer">https://cheatsheetseries.owasp.org/cheatsheets/HTTP_Headers_Cheat_Sheet.html#server</a></li></ul>
+</article>
+<article class="finding" id="finding-08e8744feae58d24e122f258242e3c705e6c6aee6defdcb5f82ed2b8db9b0d56">
+  <div class="finding-head">
+    <div><span class="index">04</span><h3>Referrer-Policy header missing</h3></div>
+    <span class="severity severity-low">LOW</span>
+  </div>
+  <table class="details">
+    <tr><th>Rule</th><td><code>web.headers.referrer_policy.missing</code></td></tr>
+    <tr><th>Affected location</th><td><code>http://127.0.0.1:8931/</code></td></tr>
+    <tr><th>Method</th><td>GET</td></tr>
+    <tr><th>Confidence</th><td>Confirmed</td></tr>
+    <tr><th>Fingerprint</th><td><code>08e8744feae58d24e122f258242e3c705e6c6aee6defdcb5f82ed2b8db9b0d56</code></td></tr>
+    <tr><th>Tags</th><td>http-headers, passive, privacy</td></tr>
+  </table>
+  <h4>Description</h4><p>The response does not explicitly control how much referrer information browsers send to other origins.</p>
+  <h4>Evidence</h4><ul><li>No Referrer-Policy response header was observed.</li></ul>
+  <h4>Recommended remediation</h4><p>Set a Referrer-Policy value appropriate for the application, such as &#x27;strict-origin-when-cross-origin&#x27; or a more restrictive policy.</p>
+  <h4>Identifiers</h4><ul><li>CWE: CWE-200</li></ul>
+  <h4>References</h4><ul><li><a href="https://owasp.org/www-project-secure-headers/" rel="noreferrer">https://owasp.org/www-project-secure-headers/</a></li></ul>
+</article>
+<article class="finding" id="finding-b8c03b8eee1265b4da5630b04c393d4fdfc80dabcc26fbf39fe0a52ec22a4d24">
+  <div class="finding-head">
+    <div><span class="index">05</span><h3>X-Content-Type-Options header missing</h3></div>
+    <span class="severity severity-low">LOW</span>
+  </div>
+  <table class="details">
+    <tr><th>Rule</th><td><code>web.headers.x_content_type_options.missing</code></td></tr>
+    <tr><th>Affected location</th><td><code>http://127.0.0.1:8931/</code></td></tr>
+    <tr><th>Method</th><td>GET</td></tr>
+    <tr><th>Confidence</th><td>Confirmed</td></tr>
+    <tr><th>Fingerprint</th><td><code>b8c03b8eee1265b4da5630b04c393d4fdfc80dabcc26fbf39fe0a52ec22a4d24</code></td></tr>
+    <tr><th>Tags</th><td>content-type, http-headers, passive</td></tr>
+  </table>
+  <h4>Description</h4><p>The response does not instruct browsers to disable MIME type sniffing.</p>
+  <h4>Evidence</h4><ul><li>No X-Content-Type-Options response header was observed.</li></ul>
+  <h4>Recommended remediation</h4><p>Add the response header &#x27;X-Content-Type-Options: nosniff&#x27;.</p>
+  <h4>Identifiers</h4><ul><li>CWE: CWE-16</li></ul>
+  <h4>References</h4><ul><li><a href="https://owasp.org/www-project-secure-headers/" rel="noreferrer">https://owasp.org/www-project-secure-headers/</a></li></ul>
+</article></section>
+<section><h2>Coverage and limitations</h2><ul><li>The assessment is passive and does not submit forms, execute JavaScript, brute-force credentials, or send exploit payloads.</li><li>Coverage applies only to responses successfully fetched within the recorded scope, policy, and execution limits.</li><li>A finding-free result does not prove that the application is free from vulnerabilities.</li><li>Client-side routes and authenticated functionality may require separately authorised assessment methods.</li><li>8 checks were skipped because they were not applicable or could not be executed.</li></ul><h3>Skipped checks</h3><ul><li><code>web.headers.hsts</code>: HSTS applies only to HTTPS responses and was not evaluated for this HTTP target.</li><li><code>web.tls.certificate.expiry</code>: TLS connection and certificate analysis applies only to HTTPS targets.</li><li><code>web.tls.certificate.hostname</code>: TLS connection and certificate analysis applies only to HTTPS targets.</li><li><code>web.tls.certificate.lifetime</code>: TLS connection and certificate analysis applies only to HTTPS targets.</li><li><code>web.tls.certificate.validity</code>: TLS connection and certificate analysis applies only to HTTPS targets.</li><li><code>web.tls.chain</code>: TLS connection and certificate analysis applies only to HTTPS targets.</li><li><code>web.tls.cipher</code>: TLS connection and certificate analysis applies only to HTTPS targets.</li><li><code>web.tls.protocol</code>: TLS connection and certificate analysis applies only to HTTPS targets.</li></ul><h3>Execution errors</h3><ul><li>None</li></ul></section>
+<footer>This report contains security-sensitive information. Distribution should follow the stated classification. WebGuard results describe only the recorded scope and execution conditions.</footer>
+</main>
+</body>
+</html>

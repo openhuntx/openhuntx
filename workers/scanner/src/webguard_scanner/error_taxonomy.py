@@ -92,6 +92,10 @@ _REQUEST_POLICIES: dict[str, ErrorPolicy] = {
         ErrorCategory.NETWORK_TRANSIENT,
         _RETRYABLE,
     ),
+    "request_deadline_exceeded": ErrorPolicy(
+        ErrorCategory.NETWORK_TRANSIENT,
+        _RETRYABLE,
+    ),
     "connection_refused": ErrorPolicy(
         ErrorCategory.NETWORK_TRANSIENT,
         _RETRYABLE,
@@ -179,6 +183,10 @@ _REQUEST_POLICIES: dict[str, ErrorPolicy] = {
         _NON_RETRYABLE,
     ),
     "content_length_ambiguous": ErrorPolicy(
+        ErrorCategory.RESPONSE_FORMAT,
+        _NON_RETRYABLE,
+    ),
+    "response_status_invalid": ErrorPolicy(
         ErrorCategory.RESPONSE_FORMAT,
         _NON_RETRYABLE,
     ),

@@ -10,10 +10,10 @@ from typing import Callable
 
 from .authorizations import AuthorizationRepository, AuthorizationRepositoryError
 from .db_errors import DatabaseError
-from .identity import IdentityStore
+from .identity import IdentityStore, IdentityStoreError
 from .permits import TrustScanPermitError, TrustScanSigner, validate_permit_use
 from .store import JobStoreError, ScanJobStore
-from .structured_logging import log_event
+from .structured_logging import exception_fields, log_event
 
 # P1-B2 (docs/audit/WEBGUARD_P1_REMEDIATION_TRACKING_2026-08.md):
 # progress-staleness bound for health/readiness -- see
@@ -69,6 +69,10 @@ class ScanScheduleCoordinator:
         self.batch_size = batch_size
         self.clock = clock
         self.monotonic = monotonic
+        # Phase 6 C-7: see worker.py's identical attributes for why
+        # these are kept alongside the P1-B1/B2 state below.
+        self.last_loop_error_type: str | None = None
+        self.last_loop_error_at: datetime | None = None
         if not 0.1 <= self.poll_seconds <= 60.0:
             raise ValueError("poll_seconds must be from 0.1 to 60 seconds.")
         if isinstance(self.batch_size, bool) or not isinstance(self.batch_size, int):
@@ -139,10 +143,21 @@ class ScanScheduleCoordinator:
             # (list_due_schedules() above, or a single schedule's own
             # DB calls hanging) -- that must keep reading as stale.
             self._touch_progress()
-            if not self.identity.authorization_is_assigned(
-                schedule.organization_id,
-                schedule.authorization_id,
-            ):
+            # Phase 6 C-6: identity.py's SQLite-backed authorization_is_
+            # assigned wraps its own sqlite3.Error into IdentityStoreError
+            # (structurally unrelated to DatabaseError, the Postgres-
+            # backed identity store's own failure type) -- caught here so
+            # one schedule's store failure blocks only that schedule,
+            # never the whole batch.
+            try:
+                assigned = self.identity.authorization_is_assigned(
+                    schedule.organization_id,
+                    schedule.authorization_id,
+                )
+            except IdentityStoreError as exc:
+                blocked += int(self._block(schedule, code=exc.code, now=now))
+                continue
+            if not assigned:
                 blocked += int(
                     self._block(
                         schedule,
@@ -296,6 +311,29 @@ class ScanScheduleCoordinator:
                 # P1-B2: touched even on the outage-backoff path -- see
                 # the identical worker.py reasoning: backing off and
                 # retrying on schedule IS legitimate progress.
+                self._touch_progress()
+                if stop_event.wait(self.poll_seconds):
+                    return
+                continue
+            except JobStoreError as exc:
+                # Phase 6 C-7: structurally unrelated to DatabaseError
+                # (ValueError, not RuntimeError), so the P1-11 handler
+                # above never catches this. Unlike a transient Postgres
+                # outage, a schedule_enqueue_conflict or similar semantic
+                # JobStoreError deliberately keeps its own visibility
+                # here rather than being folded into outage bookkeeping
+                # -- but letting it kill this loop entirely would stop
+                # recurring-schedule materialization for every tenant
+                # until an operator notices and restarts the process, a
+                # materially larger blast radius than one worker thread
+                # dying (see this same file's own worker.py counterpart).
+                # Logged and the loop continues rather than propagating.
+                self.last_loop_error_type = type(exc).__name__
+                self.last_loop_error_at = self.clock()
+                log_event(service="scheduler",
+                    event="job_store_error", level="error",
+                    **exception_fields(exc),
+                )
                 self._touch_progress()
                 if stop_event.wait(self.poll_seconds):
                     return

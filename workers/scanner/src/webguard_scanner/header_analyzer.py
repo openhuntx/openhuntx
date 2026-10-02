@@ -48,6 +48,50 @@ def _header_map(
     }
 
 
+_MAXIMUM_ECHOED_HEADER_VALUES = 10
+_MAXIMUM_ECHOED_HEADER_VALUE_LENGTH = 128
+_MAXIMUM_ECHOED_HEADER_VALUES_TEXT_LENGTH = 1024
+
+
+def _bounded_header_values_summary(values: Iterable[str]) -> str:
+    """Render observed header values for an Evidence summary safely.
+
+    Evidence.summary itself already rejects anything over 4096 characters
+    or containing a null byte (findings.py's own _text), but that check
+    runs after this text has already been built: a target that returns
+    many very long X-Content-Type-Options header lines (safe_http.py
+    bounds the whole response to 100 headers / 65536 bytes total, well
+    over the 4096-character Evidence limit on its own) would otherwise
+    raise ContractValidationError here, an uncontrolled exception this
+    analyzer's own controlled_error (HeaderAnalysisError) does not cover,
+    aborting the whole scan over one field in one response header. Every
+    value is also stripped of control characters for the same reason
+    Evidence itself blocks a null byte: this text can end up in a
+    generated report.
+    """
+
+    cleaned: list[str] = []
+    for value in values:
+        text = "".join(
+            character if character.isprintable() else "�"
+            for character in value
+        )
+        if len(text) > _MAXIMUM_ECHOED_HEADER_VALUE_LENGTH:
+            text = text[:_MAXIMUM_ECHOED_HEADER_VALUE_LENGTH] + "..."
+        cleaned.append(text)
+
+    truncated_count = max(0, len(cleaned) - _MAXIMUM_ECHOED_HEADER_VALUES)
+    cleaned = cleaned[:_MAXIMUM_ECHOED_HEADER_VALUES]
+    summary = ", ".join(cleaned)
+    if truncated_count:
+        summary += f", and {truncated_count} more"
+
+    if len(summary) > _MAXIMUM_ECHOED_HEADER_VALUES_TEXT_LENGTH:
+        summary = summary[:_MAXIMUM_ECHOED_HEADER_VALUES_TEXT_LENGTH] + "..."
+
+    return summary
+
+
 def _origin_and_path(
     target: ValidatedTarget,
 ) -> tuple[str, str]:
@@ -248,7 +292,7 @@ def analyze_security_headers(
                 ),
                 evidence_summary=(
                     "Observed X-Content-Type-Options value(s): "
-                    + ", ".join(content_type_options)
+                    + _bounded_header_values_summary(content_type_options)
                 ),
                 identifiers=(
                     ExternalIdentifier("CWE", "CWE-16"),

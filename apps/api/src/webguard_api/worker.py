@@ -189,6 +189,13 @@ class ScanJobWorker:
         self.heartbeat_retry_backoff_seconds = float(heartbeat_retry_backoff_seconds)
         self._sleep = sleep
         self.last_recovery_summary = LeaseRecoverySummary()
+        # Phase 6 C-7: last_loop_error_type/_at are a simple, always-on
+        # record of the last exception run_forever()'s own boundary had
+        # to absorb to keep the loop alive -- set for *any* such
+        # exception, not just DatabaseError, unlike the edge-triggered
+        # P1-B1 outage state below, which is Postgres-outage-specific.
+        self.last_loop_error_type: str | None = None
+        self.last_loop_error_at: datetime | None = None
         # P1-B1: edge-trigger state for database_outage_detected/
         # _recovered -- read and written only from run_forever()'s own
         # thread (the loop-boundary DatabaseError catch, and the
@@ -562,6 +569,28 @@ class ScanJobWorker:
                     # /healthz green through an outage the worker
                     # already survives, while /ready's separate
                     # dependency check correctly still fails).
+                    self._touch_progress()
+                    if stop_event.wait(self.poll_seconds):
+                        return
+                    continue
+                except JobStoreError as exc:
+                    # Phase 6 C-7: structurally unrelated to DatabaseError
+                    # (ValueError, not RuntimeError), so the P1-10 handler
+                    # above never catches this -- the SQLite-backed store's
+                    # own equivalent of an unexpected operational failure
+                    # (run_once()'s own bare `except JobStoreError: raise`
+                    # re-propagates anything not already resolved into a
+                    # blocked/failed outcome, e.g. a corrupted persisted
+                    # row). Unlike a Postgres outage, retrying this exact
+                    # row will not resolve it on its own, so this is
+                    # logged and the loop keeps going rather than tracked
+                    # as an edge-triggered outage episode.
+                    self.last_loop_error_type = type(exc).__name__
+                    self.last_loop_error_at = self.clock()
+                    log_event(service="worker",
+                        event="job_store_error", level="error",
+                        worker_id=self.worker_id, **exception_fields(exc),
+                    )
                     self._touch_progress()
                     if stop_event.wait(self.poll_seconds):
                         return

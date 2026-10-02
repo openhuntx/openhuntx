@@ -154,6 +154,19 @@ def build_report_comparison(
             "comparison_target_mismatch",
             "Baseline and current reports must have the same canonical target.",
         )
+    if baseline.scan_id == current.scan_id:
+        # C-9: a crawl resumed from a checkpoint reuses its original
+        # scan_id, so comparing such a report against itself is a real,
+        # reachable case, not a theoretical one. Without this check, the
+        # ReportComparison contract below raises ReportComparisonError,
+        # a type from a different module the CLI's own except clause
+        # here does not catch -- caught here instead, alongside every
+        # other cross-field check this function already makes, so every
+        # caller gets one consistent exception type.
+        raise ProfessionalReportError(
+            "comparison_scan_ids_equal",
+            "Baseline and current reports must not be the same scan.",
+        )
     baseline_completed = _completed_at(baseline)
     current_completed = _completed_at(current)
     if current_completed < baseline_completed:

@@ -205,7 +205,13 @@ class IdentityStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
+        try:
+            connection = sqlite3.connect(self.path, timeout=5.0, isolation_level=None)
+        except sqlite3.Error as exc:
+            raise IdentityStoreError(
+                "identity_store_open_failed",
+                "Unable to open the identity database.",
+            ) from exc
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 5000")
@@ -917,6 +923,11 @@ class IdentityStore:
                 "SELECT * FROM organizations WHERE organization_id = ?",
                 (organization_id,),
             ).fetchone()
+        except sqlite3.Error as exc:
+            raise IdentityStoreError(
+                "organization_read_failed",
+                "Unable to read organization metadata.",
+            ) from exc
         finally:
             connection.close()
         if row is None:
@@ -989,6 +1000,11 @@ class IdentityStore:
             row = connection.execute(
                 "SELECT * FROM principals WHERE principal_id = ?", (principal_id,)
             ).fetchone()
+        except sqlite3.Error as exc:
+            raise IdentityStoreError(
+                "principal_read_failed",
+                "Unable to read principal metadata.",
+            ) from exc
         finally:
             connection.close()
         if row is None:
@@ -1530,6 +1546,11 @@ class IdentityStore:
                 (organization_id, authorization_id),
             ).fetchone()
             return row is not None
+        except sqlite3.Error as exc:
+            raise IdentityStoreError(
+                "authorization_assignment_read_failed",
+                "Unable to read organization authorization assignments.",
+            ) from exc
         finally:
             connection.close()
 

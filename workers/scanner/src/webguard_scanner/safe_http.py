@@ -6,13 +6,15 @@ import errno
 import hashlib
 import http.client
 import ipaddress
+import re
 import socket
 import ssl
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import FrozenSet, Iterable, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 from .scope_validator import ValidatedTarget
 
@@ -259,12 +261,41 @@ def _tls_connection_info(
     )
 
 
+class _BoundedChunkHTTPResponse(http.client.HTTPResponse):
+    """Rejects a negative chunked-transfer chunk size.
+
+    ``http.client``'s own chunk-size parser (``int(line, 16)``) accepts a
+    leading ``-``. A malformed or hostile chunk size of ``-1`` (or any
+    negative value) then reaches ``_safe_read(chunk_left)``, which calls
+    ``fp.read(chunk_left)``: a negative size means "read until EOF" in
+    Python's file-read convention. That single internal read bypasses
+    every bound this module places on a response: `_read_bounded_body`
+    asks for at most 65536 bytes at a time specifically so its own
+    running total can be checked against ``maximum_body_bytes`` between
+    reads, but a negative chunk size is read in one call regardless of
+    the amount requested, before that check ever runs again. Rejecting a
+    negative chunk size here, at the one place it is parsed, closes that
+    gap without depending on how much any caller asks to read.
+    """
+
+    def _read_next_chunk_size(self) -> int:
+        size = super()._read_next_chunk_size()
+        if size < 0:
+            self.close()
+            raise http.client.HTTPException(
+                "Invalid negative chunk size in chunked response."
+            )
+        return size
+
+
 class _PinnedHTTPSConnection(http.client.HTTPSConnection):
     """HTTPS connection pinned to an approved IP address.
 
     The socket connects directly to connect_address while TLS certificate
     validation and SNI continue to use server_hostname.
     """
+
+    response_class = _BoundedChunkHTTPResponse
 
     def __init__(
         self,
@@ -429,7 +460,17 @@ def _request_path(target: ValidatedTarget) -> str:
     if parsed.query:
         path = f"{path}?{parsed.query}"
 
-    return path
+    # P6-003: a discovered link can carry a literal non-ASCII character
+    # (e.g. an unescaped path segment) straight through urlsplit, which
+    # does no encoding of its own. http.client's putrequest() encodes
+    # the request line as strict ASCII and raises UnicodeEncodeError on
+    # anything else -- uncontrolled, and for a crawl resuming from a
+    # checkpoint that already queued this exact URL, permanent: every
+    # resume attempt hits the same page and crashes identically. `%` is
+    # kept safe so an already-percent-encoded sequence is not
+    # double-escaped; the rest of the safe set is RFC 3986's own
+    # path/query reserved characters, left as-is.
+    return quote(path, safe="!#$%&'()*+,/:;=?@[]~._-")
 
 
 def _make_connection(
@@ -438,11 +479,17 @@ def _make_connection(
     policy: FetchPolicy,
 ) -> http.client.HTTPConnection:
     if target.scheme == "http":
-        return http.client.HTTPConnection(
+        connection = http.client.HTTPConnection(
             host=address,
             port=target.port,
             timeout=policy.timeout_seconds,
         )
+        # Instance override, not a subclass: HTTPConnection has no other
+        # customisation point needed here, and response_class is exactly
+        # the documented per-instance extension http.client provides for
+        # this (see _BoundedChunkHTTPResponse's own docstring for why).
+        connection.response_class = _BoundedChunkHTTPResponse
+        return connection
 
     if target.scheme == "https":
         return _PinnedHTTPSConnection(
@@ -477,6 +524,9 @@ def _header_size(
     return status_line_size + fields_size + 2
 
 
+_CONTENT_LENGTH_TOKEN = re.compile(r"[0-9]{1,20}")
+
+
 def _declared_content_length(
     response: http.client.HTTPResponse,
 ) -> int | None:
@@ -493,8 +543,15 @@ def _declared_content_length(
             for part in value.split(",")
         )
 
+    # str.isdigit() accepts Unicode decimal-digit characters (e.g. the
+    # superscript "\xb2") that int() cannot parse in base 10, and places
+    # no bound on length: a long enough all-ASCII-digit token exceeds
+    # Python's own integer-string-conversion limit, which int() reports
+    # by raising ValueError. Either shape used to reach int() directly
+    # below and escape as an uncontrolled exception. A strict, bounded
+    # ASCII pattern rejects both before int() is ever called.
     if not tokens or any(
-        not token.isdigit()
+        _CONTENT_LENGTH_TOKEN.fullmatch(token) is None
         for token in tokens
     ):
         raise SafeRequestError(
@@ -581,6 +638,35 @@ def _perform_request(
     )
 
     started = time.monotonic()
+    request_sent = False
+
+    # policy.timeout_seconds otherwise only bounds each individual socket
+    # operation (connect, one recv). A server that drips a byte just
+    # under that timeout -- either in the body, or as an endless stream
+    # of 1xx interim responses inside http.client's own internal read
+    # loop -- can stall this call far longer than the configured timeout
+    # without any single operation ever timing out on its own. This
+    # watchdog force-interrupts the connection once the *whole* request
+    # has run past the deadline, regardless of which blocking call it is
+    # stuck in. shutdown(), not close(): closing the fd from this thread
+    # while the main thread may be blocked in a read on it risks the fd
+    # number being reused before that read notices; shutdown() safely
+    # wakes a blocked read with EOF without invalidating the fd.
+    completed = threading.Event()
+    deadline_exceeded = threading.Event()
+
+    def _enforce_deadline() -> None:
+        if not completed.wait(policy.timeout_seconds):
+            deadline_exceeded.set()
+            sock = getattr(connection, "sock", None)
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+
+    watchdog = threading.Thread(target=_enforce_deadline, daemon=True)
+    watchdog.start()
 
     try:
         connection.putrequest(
@@ -638,6 +724,15 @@ def _perform_request(
             connection.endheaders(body)
         else:
             connection.endheaders()
+        # fetch_once's caller invokes its before_request/after_request
+        # safety hooks (rate limiting, permit-attempt budget, circuit
+        # breaker) exactly once per fetch_once call, regardless of how
+        # many resolved addresses it tries below. Once the full request
+        # has actually gone out over the wire, any further failure is a
+        # failure of *this* accounted attempt, not grounds to silently
+        # send a second real request to another address under the same
+        # accounting.
+        request_sent = True
         tls = (
             _tls_connection_info(connection, target)
             if target.scheme == "https"
@@ -663,6 +758,17 @@ def _perform_request(
                 "The response headers exceed the limit.",
             )
 
+        if not 100 <= response.status <= 599:
+            # http.client parses any digits on the status line into an int
+            # with no range check; RequestAttempt's own contract only
+            # accepts 100-599, but rejects it after this request has
+            # already been sent and counted -- reject it here instead so
+            # it never reaches that later, already-committed contract.
+            raise SafeRequestError(
+                "response_status_invalid",
+                "The response has an invalid HTTP status code.",
+            )
+
         if (
             300 <= response.status < 400
             and response.status != 304
@@ -682,6 +788,18 @@ def _perform_request(
             )
         )
 
+        if deadline_exceeded.is_set():
+            # The watchdog's shutdown() interrupted a blocking read, but
+            # for a plain Content-Length response (unlike chunked)
+            # http.client's own read() does not raise on a short read at
+            # EOF -- it just returns what it already had, so a silently
+            # truncated body would otherwise look like a complete,
+            # successful response.
+            raise SafeRequestError(
+                "request_deadline_exceeded",
+                "The request exceeded the configured time limit.",
+            )
+
         elapsed = int(
             (time.monotonic() - started) * 1000
         )
@@ -695,7 +813,16 @@ def _perform_request(
             elapsed_milliseconds=elapsed,
             tls=tls,
         )
+    except (OSError, ssl.SSLError, http.client.HTTPException) as exc:
+        if deadline_exceeded.is_set():
+            raise SafeRequestError(
+                "request_deadline_exceeded",
+                "The request exceeded the configured time limit.",
+            ) from exc
+        exc.webguard_request_sent = request_sent
+        raise
     finally:
+        completed.set()
         try:
             connection.close()
         except (
@@ -901,6 +1028,17 @@ def fetch_once(
             ssl.SSLError,
             http.client.HTTPException,
         ) as exc:
+            if getattr(exc, "webguard_request_sent", False):
+                # P6-005: a real request already went out on this address
+                # under the caller's single before_request/after_request
+                # accounting for this attempt. Falling back to the next
+                # address here would send a second real request that
+                # accounting never counted.
+                raise SafeRequestError(
+                    _connection_error_code(exc),
+                    "The request failed after it was already sent to "
+                    "the target.",
+                ) from exc
             connection_failures.append(
                 _ConnectionFailure(
                     address=address,

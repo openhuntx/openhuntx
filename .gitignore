@@ -43,6 +43,13 @@ zap-data/
 artifacts/
 *.har
 
+# Committed synthetic demo output (see examples/README.md) -- real local
+# scan output elsewhere in a checkout is still ignored by the rules above.
+!examples/scan-results/
+!examples/scan-results/*
+!examples/reports/
+!examples/reports/*
+
 # Local infrastructure
 minio-data/
 postgres-data/

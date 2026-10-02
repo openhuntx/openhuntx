@@ -158,6 +158,66 @@ class HeaderAnalyzerTests(unittest.TestCase):
             "web.headers.x_content_type_options.invalid",
         )
 
+    def test_oversized_header_value_does_not_crash_the_analyzer(self) -> None:
+        """Phase 6 C-1: this header's value reached Evidence(...) directly,
+        unbounded. Evidence itself rejects anything over 4096 characters,
+        but that check happened after the value was already embedded, so
+        a target returning a header this long raised an uncontrolled
+        ContractValidationError instead of HeaderAnalysisError -- the one
+        this analyzer's own pipeline entry actually isolates -- aborting
+        the whole scan over one response header."""
+        findings = analyze_security_headers(
+            target(),
+            response(
+                (
+                    "X-Content-Type-Options",
+                    "a" * 5000,
+                ),
+            ),
+        )
+        matches = [
+            item for item in findings
+            if item.identity.rule_id == "web.headers.x_content_type_options.invalid"
+        ]
+        self.assertEqual(len(matches), 1)
+        self.assertLessEqual(len(matches[0].evidence[0].summary), 4096)
+
+    def test_control_character_in_header_value_does_not_crash_the_analyzer(
+        self,
+    ) -> None:
+        """Evidence itself also rejects a null byte; the same unbounded
+        embedding meant a header value containing one raised the same
+        uncontrolled exception."""
+        findings = analyze_security_headers(
+            target(),
+            response(
+                (
+                    "X-Content-Type-Options",
+                    "nosniff\x00",
+                ),
+            ),
+        )
+        matches = [
+            item for item in findings
+            if item.identity.rule_id == "web.headers.x_content_type_options.invalid"
+        ]
+        self.assertEqual(len(matches), 1)
+        self.assertNotIn("\x00", matches[0].evidence[0].summary)
+
+    def test_many_duplicated_header_values_do_not_crash_the_analyzer(self) -> None:
+        findings = analyze_security_headers(
+            target(),
+            response(
+                *(("X-Content-Type-Options", "invalid-value-" + str(i)) for i in range(100)),
+            ),
+        )
+        matches = [
+            item for item in findings
+            if item.identity.rule_id == "web.headers.x_content_type_options.invalid"
+        ]
+        self.assertEqual(len(matches), 1)
+        self.assertLessEqual(len(matches[0].evidence[0].summary), 4096)
+
     def test_x_frame_options_can_provide_frame_fallback(self) -> None:
         findings = analyze_security_headers(
             target(),

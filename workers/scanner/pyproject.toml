@@ -3,9 +3,9 @@ requires = ["setuptools==83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "openhuntx-webguard-scanner"
+name = "openhuntx-webguard"
 version = "0.1.0"
-description = "Isolated scanning components for OpenHuntX WebGuard"
+description = "WebGuard: a terminal-only, authorized passive web security scanner"
 requires-python = ">=3.11,<3.15"
 dependencies = [
     "openhuntx-webguard-contracts==0.1.0",

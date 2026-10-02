@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import socket
 import ssl
+import threading
+import time
+import tracemalloc
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from email.message import Message
 from unittest.mock import patch
@@ -15,6 +20,7 @@ from webguard_scanner import (
     ValidatedTarget,
     fetch_once,
 )
+from webguard_scanner import safe_http
 
 
 class FakeResponse:
@@ -492,6 +498,406 @@ class SafeHttpTests(unittest.TestCase):
             context.exception.code,
             "tls_certificate_metadata_too_large",
         )
+
+
+class MalformedChunkedResponseTests(unittest.TestCase):
+    """Adversarial tests against a real socket, not a mocked connection.
+
+    These reproduce wire-level parsing behaviour inside ``http.client``
+    itself, which a mocked response object cannot exercise: the bug this
+    class pins (a negative chunk size) lives inside the stdlib's own
+    chunk-size parser, not in this module's code around it.
+    """
+
+    @staticmethod
+    def _serve_once(server: socket.socket, raw_response: bytes) -> None:
+        connection, _ = server.accept()
+        try:
+            connection.recv(65536)
+            try:
+                connection.sendall(raw_response)
+            except (BrokenPipeError, ConnectionResetError, OSError):
+                pass
+        finally:
+            connection.close()
+
+    def _fetch_from_raw_response(
+        self,
+        raw_response: bytes,
+        *,
+        maximum_body_bytes: int = 1_048_576,
+    ):
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        thread = threading.Thread(
+            target=self._serve_once,
+            args=(server, raw_response),
+            daemon=True,
+        )
+        thread.start()
+        self.addCleanup(server.close)
+        self.addCleanup(thread.join, timeout=2)
+
+        target = ValidatedTarget(
+            original_url=f"http://127.0.0.1:{port}/",
+            normalised_url=f"http://127.0.0.1:{port}/",
+            scheme="http",
+            hostname="127.0.0.1",
+            port=port,
+            resolved_addresses=("127.0.0.1",),
+        )
+        return fetch_once(
+            target,
+            method="GET",
+            policy=FetchPolicy(
+                maximum_body_bytes=maximum_body_bytes,
+                timeout_seconds=5,
+            ),
+        )
+
+    def test_negative_chunk_size_is_rejected_not_read_to_eof(self) -> None:
+        """P6-001: a chunk size of -1 must not bypass maximum_body_bytes.
+
+        ``http.client``'s chunk-size parser accepts a leading '-' and
+        passes the negative result to ``fp.read(chunk_left)``, where a
+        negative size means "read until EOF" -- unboundedly, regardless
+        of what this module's own read loop asked for. Both the fixed and
+        unfixed code eventually raise ``SafeRequestError`` here (the
+        garbage that follows fails to parse as a chunk header either
+        way), so the error code alone cannot distinguish them: without
+        the fix this response's full 4MB is read into memory first, then
+        discarded when the eventual parse failure occurs. The bound
+        below on peak traced memory is the actual regression this test
+        pins.
+        """
+
+        payload_size = 4 * 1024 * 1024
+        raw_response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Transfer-Encoding: chunked\r\n"
+            b"\r\n"
+            b"-1\r\n"
+            + b"A" * payload_size
+        )
+        tracemalloc.start()
+        try:
+            with self.assertRaises(SafeRequestError) as context:
+                self._fetch_from_raw_response(
+                    raw_response, maximum_body_bytes=1
+                )
+            _current, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        self.assertEqual(context.exception.code, "http_protocol_error")
+        self.assertLess(
+            peak,
+            payload_size // 4,
+            "the negative chunk size was read toward EOF instead of "
+            "being rejected at the chunk-size parser",
+        )
+
+    def test_valid_chunked_response_still_reads_normally(self) -> None:
+        raw_response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Transfer-Encoding: chunked\r\n"
+            b"\r\n"
+            b"5\r\nhello\r\n"
+            b"0\r\n\r\n"
+        )
+        response = self._fetch_from_raw_response(raw_response)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.body, b"hello")
+
+    def test_non_ascii_digit_content_length_is_rejected(self) -> None:
+        """P6-002: str.isdigit() accepts Unicode decimal digits (e.g. the
+        Latin-1 superscript-two byte, which decodes to '\xb2') that
+        int() cannot parse in base 10. Before the fix this reached
+        int('\xb2') directly and raised an uncontrolled ValueError."""
+
+        raw_response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Length: \xb2\r\n"
+            b"\r\n"
+            b"hello"
+        )
+        with self.assertRaises(SafeRequestError) as context:
+            self._fetch_from_raw_response(raw_response)
+        self.assertEqual(context.exception.code, "content_length_invalid")
+
+    def test_excessively_long_content_length_is_rejected(self) -> None:
+        """str.isdigit() places no bound on length; a long enough
+        all-digit token exceeds Python's own integer-string-conversion
+        limit, and int() raises ValueError rather than returning a
+        value. Before the fix that ValueError was uncontrolled."""
+
+        raw_response = (
+            b"HTTP/1.1 200 OK\r\n"
+            b"Content-Length: " + b"1" * 5000 + b"\r\n"
+            b"\r\n"
+            b"hello"
+        )
+        with self.assertRaises(SafeRequestError) as context:
+            self._fetch_from_raw_response(raw_response)
+        self.assertEqual(context.exception.code, "content_length_invalid")
+
+    def test_out_of_range_status_code_is_rejected(self) -> None:
+        """P6-004: http.client only requires a 3-digit status line, so a
+        server returning 600-999 previously passed through unchecked and
+        only failed later at RequestAttempt's own 100-599 contract check,
+        after the request had already been sent and counted."""
+
+        raw_response = b"HTTP/1.1 600 Custom\r\n\r\n"
+        with self.assertRaises(SafeRequestError) as context:
+            self._fetch_from_raw_response(raw_response)
+        self.assertEqual(context.exception.code, "response_status_invalid")
+
+    def test_post_send_failure_does_not_fall_back_to_a_second_address(
+        self,
+    ) -> None:
+        """P6-005: fetch_once's per-address fallback is meant for a
+        server it never reached (e.g. connection refused on one of
+        several resolved addresses). The caller's before_request/
+        after_request safety hooks -- rate limiting, permit-attempt
+        budget, circuit breaker -- are invoked exactly once per
+        fetch_once call, no matter how many addresses it tries. Before
+        this fix, a request that was fully sent to the first address but
+        then failed while its response was still being read (here: a
+        malformed chunked body) still fell back and sent a second, real
+        request to the next address -- unaccounted for by that single
+        hook pair. The second server below must never see a connection.
+        """
+
+        # The OS only assigns 127.0.0.1 to lo0 without an (unavailable in
+        # this test) sudo-added alias, so two distinct *approved
+        # addresses* are simulated by patching _make_connection to route
+        # each fake address literal to its own real 127.0.0.1 port below
+        # -- the fallback decision under test lives entirely in
+        # fetch_once's own control flow, not in address resolution.
+        bad_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        bad_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        bad_server.bind(("127.0.0.1", 0))
+        bad_server.listen(1)
+        bad_port = bad_server.getsockname()[1]
+
+        good_server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        good_server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        good_server.bind(("127.0.0.1", 0))
+        good_server.listen(1)
+        good_server.settimeout(0.5)
+        good_port = good_server.getsockname()[1]
+
+        real_make_connection = safe_http._make_connection
+        address_ports = {"127.0.0.1": bad_port, "127.0.0.9": good_port}
+
+        def fake_make_connection(target, address, policy):
+            return real_make_connection(
+                replace(target, port=address_ports[address]),
+                "127.0.0.1",
+                policy,
+            )
+
+        good_server_saw_connection = []
+
+        def serve_bad() -> None:
+            connection, _ = bad_server.accept()
+            try:
+                connection.recv(65536)
+                try:
+                    connection.sendall(
+                        b"HTTP/1.1 200 OK\r\n"
+                        b"Transfer-Encoding: chunked\r\n"
+                        b"\r\n"
+                        b"-1\r\n" + b"A" * 4096
+                    )
+                except (BrokenPipeError, ConnectionResetError, OSError):
+                    pass
+            finally:
+                connection.close()
+
+        def serve_good() -> None:
+            try:
+                connection, _ = good_server.accept()
+                good_server_saw_connection.append(True)
+                connection.close()
+            except OSError:
+                pass
+
+        bad_thread = threading.Thread(target=serve_bad, daemon=True)
+        good_thread = threading.Thread(target=serve_good, daemon=True)
+        bad_thread.start()
+        good_thread.start()
+        self.addCleanup(bad_server.close)
+        self.addCleanup(good_server.close)
+        self.addCleanup(bad_thread.join, timeout=2)
+        self.addCleanup(good_thread.join, timeout=2)
+
+        target = ValidatedTarget(
+            original_url=f"http://127.0.0.1:{bad_port}/",
+            normalised_url=f"http://127.0.0.1:{bad_port}/",
+            scheme="http",
+            hostname="127.0.0.1",
+            port=bad_port,
+            resolved_addresses=("127.0.0.1", "127.0.0.9"),
+        )
+        with patch.object(
+            safe_http, "_make_connection", fake_make_connection
+        ):
+            with self.assertRaises(SafeRequestError) as context:
+                fetch_once(
+                    target,
+                    method="GET",
+                    policy=FetchPolicy(
+                        maximum_body_bytes=1,
+                        timeout_seconds=5,
+                    ),
+                )
+        self.assertEqual(context.exception.code, "http_protocol_error")
+
+        good_thread.join(timeout=2)
+        self.assertEqual(
+            good_server_saw_connection,
+            [],
+            "fetch_once sent a second real request to another address "
+            "after the first request had already been sent, bypassing "
+            "the caller's single before_request/after_request accounting",
+        )
+
+    def test_slow_drip_response_is_bounded_by_an_overall_deadline(
+        self,
+    ) -> None:
+        """P6-006: timeout_seconds only bounded each individual socket
+        operation, not the request as a whole. A server that drips its
+        body one byte at a time, with every gap safely under that
+        per-operation timeout, kept the whole call alive far past the
+        configured limit -- each individual read succeeds, so nothing
+        ever timed out on its own."""
+
+        body = b"A" * 20
+        drip_seconds = 0.05
+
+        def serve(server: socket.socket) -> None:
+            connection, _ = server.accept()
+            try:
+                connection.recv(65536)
+                connection.sendall(
+                    f"HTTP/1.1 200 OK\r\n"
+                    f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+                )
+                for byte in body:
+                    time.sleep(drip_seconds)
+                    try:
+                        connection.sendall(bytes([byte]))
+                    except (
+                        BrokenPipeError,
+                        ConnectionResetError,
+                        OSError,
+                    ):
+                        return
+            finally:
+                connection.close()
+
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        thread = threading.Thread(
+            target=serve, args=(server,), daemon=True
+        )
+        thread.start()
+        self.addCleanup(server.close)
+        self.addCleanup(thread.join, timeout=3)
+
+        target = ValidatedTarget(
+            original_url=f"http://127.0.0.1:{port}/",
+            normalised_url=f"http://127.0.0.1:{port}/",
+            scheme="http",
+            hostname="127.0.0.1",
+            port=port,
+            resolved_addresses=("127.0.0.1",),
+        )
+        started = time.monotonic()
+        with self.assertRaises(SafeRequestError) as context:
+            fetch_once(
+                target,
+                method="GET",
+                policy=FetchPolicy(timeout_seconds=0.5),
+            )
+        elapsed = time.monotonic() - started
+
+        self.assertEqual(
+            context.exception.code, "request_deadline_exceeded"
+        )
+        self.assertLess(
+            elapsed,
+            len(body) * drip_seconds - 0.2,
+            "the request was not cut off by the overall deadline",
+        )
+
+
+class NonAsciiPathTests(unittest.TestCase):
+    """P6-003: a discovered link can carry a literal non-ASCII path
+    segment straight through urlsplit, which does no encoding of its
+    own. http.client's putrequest() encodes the request line as strict
+    ASCII, so this must be reproduced with a real connection -- a mocked
+    one would happily store whatever string it is handed."""
+
+    def test_non_ascii_path_is_percent_encoded_on_the_wire(self) -> None:
+        received = {}
+
+        def serve(server: socket.socket) -> None:
+            connection, _ = server.accept()
+            try:
+                request_line = b""
+                while not request_line.endswith(b"\r\n"):
+                    request_line += connection.recv(1)
+                received["request_line"] = request_line
+                connection.recv(65536)
+                connection.sendall(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+                )
+            finally:
+                connection.close()
+
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server.bind(("127.0.0.1", 0))
+        server.listen(1)
+        port = server.getsockname()[1]
+        thread = threading.Thread(
+            target=serve, args=(server,), daemon=True
+        )
+        thread.start()
+        self.addCleanup(server.close)
+        self.addCleanup(thread.join, timeout=2)
+
+        target = ValidatedTarget(
+            original_url=f"http://127.0.0.1:{port}/café",
+            normalised_url=f"http://127.0.0.1:{port}/café",
+            scheme="http",
+            hostname="127.0.0.1",
+            port=port,
+            resolved_addresses=("127.0.0.1",),
+        )
+        response = fetch_once(target, method="GET")
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(
+            received["request_line"],
+            b"GET /caf%C3%A9 HTTP/1.1\r\n",
+        )
+
+    def test_already_percent_encoded_path_is_not_double_encoded(
+        self,
+    ) -> None:
+        target = create_target(
+            normalised_url="https://example.com/a%20b?x=1%2B1",
+        )
+        path = safe_http._request_path(target)
+        self.assertEqual(path, "/a%20b?x=1%2B1")
 
 
 if __name__ == "__main__":

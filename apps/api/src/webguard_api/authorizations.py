@@ -37,7 +37,7 @@ class AuthorizationRepository:
         except OSError as exc:
             raise AuthorizationRepositoryError(
                 "authorization_directory_unavailable",
-                f"Unable to inspect authorization directory {self.directory}.",
+                "Unable to inspect the authorization directory.",
             ) from exc
         if stat.S_ISLNK(metadata.st_mode):
             raise AuthorizationRepositoryError(
@@ -73,6 +73,17 @@ class AuthorizationRepository:
         return entries
 
     def get(self, authorization_id: str) -> OwnedTargetAuthorization:
+        # Every tenant's authorization document lives in this one shared
+        # directory (tenant scoping happens one layer up, by matching the
+        # authorization's own organization field); _entries() enumerates
+        # all of them, sorted by filename, regardless of which tenant's
+        # authorization_id this call is actually looking for. A message
+        # naming this directory, another tenant's filename, or another
+        # tenant's own validation-error text (which can itself embed that
+        # tenant's canonical target URL) would disclose it to a caller
+        # whose own lookup had nothing to do with that file, purely
+        # because that file happened to sort earlier and fail first.
+        # Every error below keeps its stable code but drops that detail.
         matches: list[OwnedTargetAuthorization] = []
         for path in self._entries():
             try:
@@ -80,26 +91,26 @@ class AuthorizationRepository:
             except OSError as exc:
                 raise AuthorizationRepositoryError(
                     "authorization_file_inspection_failed",
-                    f"Unable to inspect authorization document {path.name}.",
+                    "Unable to inspect an authorization document.",
                 ) from exc
             if stat.S_ISLNK(metadata.st_mode):
                 raise AuthorizationRepositoryError(
                     "authorization_file_symlink_not_allowed",
-                    f"Authorization document {path.name} cannot be a symbolic link.",
+                    "An authorization document cannot be a symbolic link.",
                 )
             if not stat.S_ISREG(metadata.st_mode):
                 continue
             if metadata.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
                 raise AuthorizationRepositoryError(
                     "authorization_file_permissions_insecure",
-                    f"Authorization document {path.name} must use owner-only permissions.",
+                    "An authorization document must use owner-only permissions.",
                 )
             try:
                 authorization = load_owned_target_authorization_file(path)
             except OwnedTargetContractError as exc:
                 raise AuthorizationRepositoryError(
                     exc.code,
-                    f"Authorization document {path.name} is invalid: {exc.message}",
+                    "An authorization document is invalid.",
                 ) from exc
             if authorization.authorization_id == authorization_id:
                 matches.append(authorization)
